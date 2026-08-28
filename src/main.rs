@@ -265,9 +265,18 @@ async fn run_test_all(work_dir: PathBuf, mut config: AppConfig) -> Result<()> {
     let has_deepseek = config.direct_deepseek_api_key.is_some();
     let has_openrouter = config.direct_openrouter_api_key.is_some();
     println!("🔍 Test wszystkich modeli — klucze: gemini={} openai={} groq={} deepseek={} openrouter={} bridge={}", has_gemini, has_openai, has_groq, has_deepseek, has_openrouter, config.bridge_url);
-    // Szybki check mostka
-    let bridge_ok = reqwest::Client::new().get(format!("{}/health", config.bridge_url.trim_end_matches("/v1").trim_end_matches("/"))).timeout(std::time::Duration::from_millis(500)).send().await.is_ok();
-    println!("   Bridge 8765: {}", if bridge_ok { "✅ reachable" } else { "⚪ offline (Bridge models będą FAIL — uruchom wtyczkę Cursor/Antigravity/Trae)" });
+    // Szybki check mostka — próbuj 8765,8766,8767 (multi-edytory Trae+Antigravity+Devin)
+    let base = config.bridge_url.trim_end_matches("/v1").trim_end_matches("/").to_string();
+    let mut bridge_ok = false;
+    let mut bridge_port = String::new();
+    for p in ["8765","8766","8767"] {
+        let url = base.replace("8765", p);
+        let health = format!("{}/health", url.trim_end_matches('/'));
+        if reqwest::Client::new().get(&health).timeout(std::time::Duration::from_millis(500)).send().await.is_ok() {
+            bridge_ok = true; bridge_port = p.to_string(); break;
+        }
+    }
+    println!("   Bridge 8765-8767: {}", if bridge_ok { format!("✅ reachable :{} ({})", bridge_port, base.replace("8765", &bridge_port)) } else { "⚪ offline (Bridge models będą FAIL — uruchom wtyczkę Cursor/Antigravity/Trae, sprawdź curl http://127.0.0.1:8765/health)".to_string() });
     let router = ProviderRouter::new(config);
     let models = router.get_available_models();
     println!("{:<35} {:<15} {:<10} {}", "MODEL", "PROVIDER", "STATUS", "DETAIL");

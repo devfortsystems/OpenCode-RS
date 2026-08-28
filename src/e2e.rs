@@ -60,13 +60,13 @@ mod e2e_tests {
         // open picker Ctrl+M
         app.handle_key_event(ctrl('m')).await.unwrap();
         assert!(app.show_model_picker);
-        // initial tab is fav (8), switch to All for full count
-        let total_fav = app.filtered_models().len();
-        assert!(total_fav >= 1, "fav should have at least 1");
-        app.handle_key_event(key(KeyCode::Right)).await.unwrap(); // -> All
-        assert_eq!(app.model_picker_index, 0);
+        // default tab is now All (1) after fix, verify
+        assert_eq!(app.model_filter_index, 1, "default should be All");
         let total_all = app.filtered_models().len();
         assert!(total_all >= 70, "All should have 70+ models, got {}", total_all);
+        // Right goes to OpenCode (should be ~11)
+        app.handle_key_event(key(KeyCode::Right)).await.unwrap(); // All -> OpenCode
+        assert_eq!(app.model_picker_index, 0);
         // Down should increase index by 1
         let before = app.model_picker_index;
         app.handle_key_event(key(KeyCode::Down)).await.unwrap();

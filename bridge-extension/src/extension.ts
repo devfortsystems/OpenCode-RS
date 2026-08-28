@@ -23,6 +23,13 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(restartCmd);
 }
 
+function tryListen(port: number, statusBarItem: vscode.StatusBarItem, attempt: number = 0) {
+    if (attempt > 2) {
+        statusBarItem.text = '$(alert) OpenCode-RS: No free port (8765-8767)';
+        return;
+    }
+    startBridgeServer(port + attempt, statusBarItem);
+}
 function startBridgeServer(port: number, statusBarItem: vscode.StatusBarItem) {
     server = http.createServer(async (req, res) => {
         // CORS headers
@@ -208,11 +215,18 @@ function startBridgeServer(port: number, statusBarItem: vscode.StatusBarItem) {
 
     server.listen(port, '127.0.0.1', () => {
         console.log(`[OpenCode-RS Bridge] Listening on http://127.0.0.1:${port}`);
+        statusBarItem.text = `$(radio-tower) OpenCode-RS: Active :${port}`;
+        statusBarItem.tooltip = `OpenCode-RS Bridge running on http://127.0.0.1:${port}`;
     });
 
     server.on('error', (e: any) => {
-        statusBarItem.text = '$(alert) OpenCode-RS: Error';
-        statusBarItem.tooltip = `Bridge error: ${e.message}`;
+        if (e.code === 'EADDRINUSE' && port < 8767) {
+            console.log(`[OpenCode-RS Bridge] Port ${port} in use, trying ${port + 1}`);
+            setTimeout(() => startBridgeServer(port + 1, statusBarItem), 500);
+        } else {
+            statusBarItem.text = '$(alert) OpenCode-RS: Error';
+            statusBarItem.tooltip = `Bridge error: ${e.message}`;
+        }
     });
 }
 
