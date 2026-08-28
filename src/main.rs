@@ -82,6 +82,10 @@ struct CliArgs {
     /// Bezpośredni prompt podany jako argumenty (np. opencode "napisz funkcję...")
     #[arg(trailing_var_arg = true)]
     direct_prompt: Vec<String>,
+
+    /// Przetestuj wszystkie 75+ modeli live (ping) i wypisz tabelę OK/FAIL
+    #[arg(long)]
+    test_all: bool,
 }
 
 #[tokio::main]
@@ -147,6 +151,10 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    if args.test_all {
+        return run_test_all(work_dir, config).await;
+    }
 
     // ── TRYB LINII KOMEND (CLI / ONE-SHOT EXECUTION) ────────────────────────
     if let Some(prompt) = cli_prompt {
@@ -243,6 +251,62 @@ async fn run_cli_mode(
         }
     }
 
+    Ok(())
+}
+
+async fn run_test_all(work_dir: PathBuf, mut config: AppConfig) -> Result<()> {
+    use tokio::sync::mpsc;
+    // Załaduj klucze tak jak TUI (auth.json + .env + OpenCode import)
+    crate::auth::AuthManager::auto_load_credentials(&work_dir);
+    crate::importer::OpenCodeMigration::import_credentials(&mut config);
+    let has_gemini = config.direct_gemini_api_key.is_some();
+    let has_openai = config.direct_openai_api_key.is_some();
+    let has_groq = config.direct_groq_api_key.is_some();
+    let has_deepseek = config.direct_deepseek_api_key.is_some();
+    let has_openrouter = config.direct_openrouter_api_key.is_some();
+    println!("🔍 Test wszystkich modeli — klucze: gemini={} openai={} groq={} deepseek={} openrouter={} bridge={}", has_gemini, has_openai, has_groq, has_deepseek, has_openrouter, config.bridge_url);
+    // Szybki check mostka
+    let bridge_ok = reqwest::Client::new().get(format!("{}/health", config.bridge_url.trim_end_matches("/v1").trim_end_matches("/"))).timeout(std::time::Duration::from_millis(500)).send().await.is_ok();
+    println!("   Bridge 8765: {}", if bridge_ok { "✅ reachable" } else { "⚪ offline (Bridge models będą FAIL — uruchom wtyczkę Cursor/Antigravity/Trae)" });
+    let router = ProviderRouter::new(config);
+    let models = router.get_available_models();
+    println!("{:<35} {:<15} {:<10} {}", "MODEL", "PROVIDER", "STATUS", "DETAIL");
+    println!("{}", "-".repeat(110));
+    for (id, name, prov) in models {
+        // Pre-check: jeśli direct bez klucza to od razu NO_KEY, nie uderzaj w API
+        let no_key = match prov {
+            "gemini" if !has_gemini => true,
+            "openai" if !has_openai => true,
+            "groq" if !has_groq => true,
+            "deepseek" if !has_deepseek => true,
+            "openrouter" if !has_openrouter => true,
+            _ if ["opencode","antigravity","trae","cursor","windsurf","copilot","amazon-q","augment"].contains(&prov) && !bridge_ok => true,
+            _ => false,
+        };
+        if no_key {
+            let reason = if ["opencode","antigravity","trae","cursor","windsurf","copilot","amazon-q","augment"].contains(&prov) { "bridge offline" } else { "brak klucza w .env/auth.json" };
+            println!("{:<35} {:<15} {:<10} {}", id, prov, "⚪ NO_KEY", reason);
+            continue;
+        }
+        let (tx, mut rx) = mpsc::channel::<String>(10);
+        let msgs = vec![ChatMessage { role: "user".to_string(), content: "ping".to_string() }];
+        let fut = router.stream_with_failover(id, &msgs, tx);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        match res {
+            Ok(Ok(used)) => {
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(300), async { while rx.recv().await.is_some() {} }).await;
+                println!("{:<35} {:<15} {:<10} {}", id, prov, "✅ OK", format!("used {}", used));
+            },
+            Ok(Err(e)) => {
+                let msg = e.to_string().replace('\n', " ");
+                let short = msg.chars().take(100).collect::<String>();
+                let status = if short.contains("401") || short.contains("403") || short.contains("No key") || short.contains("klucza") { "⚪ NO_KEY" } else if short.contains("mostkiem") || short.contains("bridge") { "⚪ BRIDGE" } else { "❌ FAIL" };
+                println!("{:<35} {:<15} {:<10} {}", id, prov, status, short);
+            },
+            Err(_) => println!("{:<35} {:<15} {:<10} {}", id, prov, "⏱ TIMEOUT", "5s"),
+        }
+        let _ = name;
+    }
     Ok(())
 }
 
