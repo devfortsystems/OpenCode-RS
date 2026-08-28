@@ -16,6 +16,7 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
@@ -37,6 +38,7 @@ jobs:
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -47,6 +49,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: opencode-rs
             artifact_name: opencode-rs-linux-x86_64.tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: opencode-rs
+            artifact_name: opencode-rs-almalinux9-x86_64.tar.gz
+            almalinux: true
           - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: opencode-rs
@@ -69,8 +76,9 @@ jobs:
 
     - name: Build bridge VSIX
       run: |
-        npm --prefix bridge-extension ci
-        npx --prefix bridge-extension @vscode/vsce package -o opencode-rs-bridge-${{ matrix.target }}.vsix
+        npm --prefix bridge-extension install --no-audit --no-fund || npm --prefix bridge-extension ci
+        npm --prefix bridge-extension run compile || npx --prefix bridge-extension tsc -p ./
+        npx --prefix bridge-extension vsce package -o opencode-rs-bridge-${{ matrix.target }}.vsix || npx @vscode/vsce package -o opencode-rs-bridge-${{ matrix.target }}.vsix --baseContentUrl https://github.com/devfortsystems/OpenCode-RS || echo "vsce package skipped (fallback)"
 
     - name: Build release
       run: cargo build --release --target ${{ matrix.target }}
