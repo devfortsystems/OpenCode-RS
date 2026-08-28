@@ -1,9 +1,9 @@
 [package]
 name = "opencode-rs"
-version = "1.18.23"
+version = "1.18.25"
 edition = "2021"
 authors = ["Daniel @ DevFort.pl"]
-description = "DevFort.pl OpenCode-RS 1.18.23 — Universal Terminal AI Coding Agent in Rust (OpenCode 1.18.23 compatible)"
+description = "DevFort.pl OpenCode-RS 1.18.25 — Universal Terminal AI Coding Agent in Rust (OpenCode 1.18.25 compatible)"
 repository = "https://github.com/devfortsystems/OpenCode-RS"
 homepage = "https://github.com/devfortsystems/OpenCode-RS"
 readme = "README.md"

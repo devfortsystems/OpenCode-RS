@@ -2,7 +2,7 @@
   "name": "opencode-rs-bridge",
   "displayName": "OpenCode-RS Universal Bridge",
   "description": "Bridge extension connecting Cursor, Windsurf, Trae, and VS Code models to OpenCode-RS terminal agent",
-  "version": "1.18.23",
+  "version": "1.18.25",
   "publisher": "opencode-rs",
   "engines": {
     "vscode": "^1.85.0"
