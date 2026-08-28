@@ -149,7 +149,7 @@ impl App {
             scroll_offset: 0,
             show_model_picker: false,
             model_picker_index: 0,
-            model_filter_index: 0,
+            model_filter_index: 1,
             available_models,
             dynamic_models: Vec::new(),
             show_session_picker: false,
