@@ -1,0 +1,29 @@
+{
+  "name": "opencode-rs-bridge",
+  "displayName": "OpenCode-RS Universal Bridge",
+  "description": "Bridge extension connecting Cursor, Windsurf, Trae, and VS Code models to OpenCode-RS terminal agent",
+  "version": "1.18.23",
+  "publisher": "opencode-rs",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}

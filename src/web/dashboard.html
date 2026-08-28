@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenCode-RS — Web Companion</title>
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: rgba(22, 24, 34, 0.75);
+      --border: rgba(99, 102, 241, 0.25);
+      --primary: #6366f1;
+      --primary-glow: rgba(99, 102, 241, 0.4);
+      --accent: #38bdf8;
+      --assistant: #10b981;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+    
+    header {
+      background: rgba(15, 17, 26, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo { font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
+    .logo-badge { background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.8rem; }
+    .status-pill { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--assistant); background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.3rem 0.8rem; border-radius: 999px; }
+    .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--assistant); box-shadow: 0 0 8px var(--assistant); }
+
+    main {
+      flex: 1;
+      max-width: 1000px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    }
+
+    .grid-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    .stat-box {
+      background: rgba(30, 34, 48, 0.6);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .stat-label { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+    .stat-value { font-size: 1.15rem; font-weight: 600; color: var(--text); }
+
+    .chat-container {
+      flex: 1;
+      min-height: 380px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      overflow-y: auto;
+    }
+    .msg {
+      padding: 0.85rem 1.15rem;
+      border-radius: 10px;
+      max-width: 85%;
+      line-height: 1.5;
+      font-size: 0.95rem;
+    }
+    .msg.system { background: rgba(99, 102, 241, 0.12); border-left: 3px solid var(--primary); align-self: stretch; max-width: 100%; }
+    .msg.user { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); align-self: flex-end; }
+    .msg.assistant { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.25); align-self: flex-start; }
+
+    .input-dock {
+      display: flex;
+      gap: 0.75rem;
+      background: rgba(15, 17, 26, 0.9);
+      border: 1px solid var(--border);
+      padding: 0.75rem;
+      border-radius: 12px;
+    }
+    input[type="text"] {
+      flex: 1;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      color: #fff;
+      font-size: 0.95rem;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: var(--primary); box-shadow: 0 0 10px var(--primary-glow); }
+    button {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: white;
+      border: none;
+      padding: 0 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span>◈ OpenCode-RS</span>
+      <span class="logo-badge">Web Companion</span>
+    </div>
+    <div class="status-pill">
+      <div class="pulse-dot"></div>
+      <span id="conn-status">Terminal Podłączony</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="grid-stats">
+      <div class="stat-box">
+        <div class="stat-label">Aktywny Operator AI</div>
+        <div class="stat-value" id="stat-model">Claude 3.7 / Cursor Pro</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Środowisko Wykonawcze</div>
+        <div class="stat-value">Host / WSL / Docker</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Bezpieczeństwo & Git</div>
+        <div class="stat-value" style="color: var(--assistant)">Dual-Repo Vault Active</div>
+      </div>
+    </div>
+
+    <div class="card chat-container" id="chat-stream">
+      <div class="msg system">
+        🚀 <b>OpenCode-RS Web Companion Active</b><br>
+        Połączono ze stacją roboczą. Możesz podglądać logi sesji i sterować agentem z poziomu przeglądarki lub telefonu.
+      </div>
+    </div>
+
+    <div class="input-dock">
+      <input type="text" id="prompt-input" placeholder="Wpisz zadanie lub komendę (np. /review, /tests, /branch, /wsl)..." onkeypress="if(event.key==='Enter') sendPrompt()">
+      <button onclick="sendPrompt()">Wyślij</button>
+    </div>
+  </main>
+
+  <script>
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        document.getElementById('conn-status').innerText = 'Projekt: ' + data.project;
+      } catch (e) {
+        document.getElementById('conn-status').innerText = 'Offline';
+      }
+    }
+
+    function sendPrompt() {
+      const input = document.getElementById('prompt-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const chat = document.getElementById('chat-stream');
+      const userMsg = document.createElement('div');
+      userMsg.className = 'msg user';
+      userMsg.innerText = text;
+      chat.appendChild(userMsg);
+
+      input.value = '';
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    loadStatus();
+  </script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+/target
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+opencode_session_*.json
+locales/*.tmp.json
+SUBSKRYPCJE.md
