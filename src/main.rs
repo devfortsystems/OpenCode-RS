@@ -30,6 +30,7 @@ mod update;
 mod web;
 mod taste;
 mod skills;
+mod memory;
 mod e2e;
 
 use anyhow::Result;

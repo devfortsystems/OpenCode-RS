@@ -306,6 +306,7 @@ impl ContextManager {
         let taste_ctx = self.load_taste_context();
         let skills_ctx = self.load_skills_context();
         let memories_ctx = self.load_memories_context();
+        let memory_blocks = crate::memory::MemoryBlocks::new(self.work_dir.clone()).inject_into_prompt();
         let mode_instructions = match mode {
             "architect" => "TRYB ARCHITEKTA: Skup się na planowaniu, projektowaniu architektury, modularności i analizie zależności. Przygotuj plan działania przed wprowadzaniem zmian.",
             "ask" => "TRYB PYTANIA (Read-only): Odpowiadaj na pytania i wyjaśniaj kod. Nie proponuj modyfikacji plików dopóki użytkownik o to wprost nie poprosi.",
@@ -337,6 +338,9 @@ SKILLS (Roo/Cline/Trae):
 MEMORIES (Windsurf/Trae):
 {memories_ctx}
 
+MEMORY BLOCKS (Letta-style, edytowalne — ucz się między sesjami):
+{memory_blocks}
+
 SERWERY MODEL CONTEXT PROTOCOL (MCP):
 {mcp_report}
 
@@ -347,7 +351,12 @@ TWOJE MOŻLIWOŚCI I NARZĘDZIA:
    - `write_file(path, content)` – tworzenie nowych plików,
    - `bash_exec(command)` – wykonywanie komend powłoki (Host / WSL / Docker),
    - `grep_search(query)` – szybkie przeszukiwanie bazy kodu.
-2. Gdy chcesz użyć narzędzia, wygeneruj blok:
+2. Pamięć (uczenie się między sesjami, Letta-style):
+   - `core_memory_append(label, content)` – dopisz wiedzę do bloku (label: persona | human | project),
+   - `core_memory_replace(label, old_str, new_str)` – podmień fragment bloku,
+   - `create_skill(name, content)` – utwórz learned skill z doświadczenia (zapis do .opencode/skills/learned/<name>/SKILL.md).
+   Używaj ich gdy odkryjesz wzorzec/preferencję/wiedzę o projekcie, którą przyszła sesja powinna znać. Generalizuj, nie loguj pojedynczych zdarzeń. Skille tworzy po skończeniu złożonego zadania (np. procedura DB migration w tym projekcie).
+3. Gdy chcesz użyć narzędzia, wygeneruj blok:
 <tool_call>
 {{"name": "nazwa_narzędzia", "arguments": {{"parametr": "wartość"}}}}
 </tool_call>
@@ -366,6 +375,7 @@ ZASADY:
             taste_ctx = if taste_ctx.is_empty() { "(brak taste.md — uruchom `npx taste push --all` lub /taste)" } else { &taste_ctx },
             skills_ctx = if skills_ctx.is_empty() { "(brak skilli — dodaj .roo/skills/*/SKILL.md)" } else { &skills_ctx },
             memories_ctx = if memories_ctx.is_empty() { "(brak memories.md)" } else { &memories_ctx },
+            memory_blocks = if memory_blocks.is_empty() { "(brak bloków — użyj /remember lub core_memory_append by zacząć się uczyć)" } else { &memory_blocks },
             mcp_report = mcp_report
         )
     }

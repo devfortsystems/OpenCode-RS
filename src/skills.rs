@@ -31,6 +31,7 @@ impl SkillsManager {
             (self.work_dir.join(".cline").join("skills"), "cline"),
             (self.work_dir.join(".commandcode").join("skills"), "commandcode"),
             (self.work_dir.join(".opencode").join("skills"), "opencode"),
+            (self.work_dir.join(".opencode").join("skills").join("learned"), "learned"),
             (self.work_dir.join("skills"), "generic"),
         ];
         for (root, src) in roots {
@@ -111,6 +112,28 @@ impl SkillsManager {
         }
         lines.join("\n")
     }
+
+    /// Tworzy nowy "learned skill" — agent uczy się skilla z doświadczenia (Letta-style skill learning).
+    /// Zapisuje do `.opencode/skills/learned/<name>/SKILL.md`.
+    /// Zwraca ścieżkę utworzonego pliku.
+    pub fn create_learned_skill(&self, name: &str, content: &str) -> std::io::Result<std::path::PathBuf> {
+        let safe_name: String = name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
+        if safe_name.is_empty() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "nazwa skilla nie może być pusta"));
+        }
+        let skill_dir = self.work_dir.join(".opencode").join("skills").join("learned").join(&safe_name);
+        std::fs::create_dir_all(&skill_dir)?;
+        let skill_file = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_file, content)?;
+        Ok(skill_file)
+    }
+
+    /// Lista tylko learned skilli (do /skills learned).
+    pub fn list_learned_skills(&self) -> Vec<SkillInfo> {
+        self.list_skills().into_iter().filter(|s| s.source == "learned").collect()
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +168,34 @@ mod tests {
         fs::write(dir.join(".clinerules"), "follow clean code").unwrap();
         let sm = SkillsManager::new(dir.clone());
         assert!(sm.list_skills().iter().any(|s| s.name == ".clinerules"));
+        fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn test_create_learned_skill() {
+        let dir = std::env::temp_dir().join(format!("opencode_skills_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let sm = SkillsManager::new(dir.clone());
+        let path = sm.create_learned_skill("db-migration", "# DB Migration\n1. sqlx::migrate!\n2. test").unwrap();
+        assert!(path.exists());
+        assert!(path.to_string_lossy().contains("learned"));
+        assert!(path.to_string_lossy().contains("db-migration"));
+        // Powinien być wykryty przez list_skills jako "learned"
+        let list = sm.list_skills();
+        assert!(list.iter().any(|s| s.name == "db-migration" && s.source == "learned"), "learned skill powinien być wykryty");
+        // list_learned_skills
+        let learned = sm.list_learned_skills();
+        assert_eq!(learned.len(), 1);
+        assert_eq!(learned[0].name, "db-migration");
+        fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn test_create_learned_skill_sanitizes_name() {
+        let dir = std::env::temp_dir().join(format!("opencode_skills_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let sm = SkillsManager::new(dir.clone());
+        // spacje i znaki specjalne → zamienione na '-'
+        let path = sm.create_learned_skill("my skill/name!!", "content").unwrap();
+        assert!(path.to_string_lossy().contains("my-skill-name"));
         fs::remove_dir_all(&dir).ok();
     }
 }

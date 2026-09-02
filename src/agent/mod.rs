@@ -233,6 +233,37 @@ impl Agent {
                     .unwrap_or_default();
                 self.tools.grep_search(query)
             }
+            "core_memory_append" => {
+                let label = args.get("label").and_then(|v| v.as_str()).unwrap_or_default();
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+                if label.is_empty() || content.is_empty() {
+                    return Err(anyhow::anyhow!("core_memory_append wymaga 'label' (persona|human|project) i 'content'"));
+                }
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                let new_content = mb.append_block(label, content)?;
+                Ok(format!("✅ Dopisano do bloku pamięci '{label}' (teraz {} znaków).\nNowa treść:\n{}", new_content.len(), new_content))
+            }
+            "core_memory_replace" => {
+                let label = args.get("label").and_then(|v| v.as_str()).unwrap_or_default();
+                let old_str = args.get("old_str").and_then(|v| v.as_str()).unwrap_or_default();
+                let new_str = args.get("new_str").and_then(|v| v.as_str()).unwrap_or_default();
+                if label.is_empty() || old_str.is_empty() {
+                    return Err(anyhow::anyhow!("core_memory_replace wymaga 'label' (persona|human|project), 'old_str' i 'new_str'"));
+                }
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                let new_content = mb.replace_in_block(label, old_str, new_str)?;
+                Ok(format!("✅ Zastąpiono fragment w bloku pamięci '{label}' (teraz {} znaków).\nNowa treść:\n{}", new_content.len(), new_content))
+            }
+            "create_skill" => {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+                if name.is_empty() || content.is_empty() {
+                    return Err(anyhow::anyhow!("create_skill wymaga 'name' i 'content' (treść SKILL.md)"));
+                }
+                let sm = crate::skills::SkillsManager::new(self.work_dir.clone());
+                let path = sm.create_learned_skill(name, content)?;
+                Ok(format!("✅ Utworzono learned skill '{name}' → {}\nSkill będzie automatycznie wczytywany w przyszłych sesjach.", path.display()))
+            }
             _ => {
                 // Sprawdź fallback do narzędzia MCP jeśli przekazano pole "server"
                 if let Some(server) = args.get("server").and_then(|s| s.as_str()) {

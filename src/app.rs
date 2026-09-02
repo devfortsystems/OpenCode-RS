@@ -1097,6 +1097,121 @@ impl App {
                     }
                 }
             }
+            "/memory" => {
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                if parts.len() > 1 {
+                    match parts[1] {
+                        "show" => {
+                            let label = parts.get(2).copied().unwrap_or("");
+                            let content = mb.load_block(label);
+                            let msg = if content.is_empty() {
+                                format!("🧠 Blok '{label}' jest pusty.")
+                            } else {
+                                format!("🧠 Blok '{label}' ({} znaków):\n```\n{}\n```", content.len(), content)
+                            };
+                            self.messages.push(ChatMessage { role: "system".to_string(), content: msg });
+                        }
+                        "clear" => {
+                            let label = parts.get(2).copied().unwrap_or("");
+                            if label.is_empty() {
+                                self.messages.push(ChatMessage { role: "system".to_string(), content: "❌ Użycie: /memory clear <label>". to_string() });
+                            } else {
+                                match mb.save_block(label, "") {
+                                    Ok(_) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("🧹 Wyczyszczono blok '{label}'.") }),
+                                    Err(e) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("❌ {e}") }),
+                                }
+                            }
+                        }
+                        "push" => {
+                            let msg = parts[2..].join(" ");
+                            match crate::memory::MemoryBlocks::git_push_memory(&msg) {
+                                Ok(o) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("📤 /memory push:\n{o}") }),
+                                Err(e) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("❌ /memory push: {e}") }),
+                            }
+                        }
+                        "pull" => {
+                            match crate::memory::MemoryBlocks::git_pull_memory() {
+                                Ok(o) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("📥 /memory pull:\n{o}") }),
+                                Err(e) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("❌ /memory pull: {e}") }),
+                            }
+                        }
+                        "status" => {
+                            match crate::memory::MemoryBlocks::git_status_memory() {
+                                Ok(o) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("📋 /memory status:\n```\n{o}\n```") }),
+                                Err(e) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("❌ /memory status: {e}") }),
+                            }
+                        }
+                        "remote" => {
+                            let url = parts.get(2).copied().unwrap_or("");
+                            if url.is_empty() {
+                                self.messages.push(ChatMessage { role: "system".to_string(), content: "❌ Użycie: /memory remote <git-url> (np. git@github.com:user/opencode-memory.git)".to_string() });
+                            } else {
+                                match crate::memory::MemoryBlocks::git_set_remote(url) {
+                                    Ok(o) => self.messages.push(ChatMessage { role: "system".to_string(), content: o }),
+                                    Err(e) => self.messages.push(ChatMessage { role: "system".to_string(), content: format!("❌ {e}") }),
+                                }
+                            }
+                        }
+                        _ => {
+                            self.messages.push(ChatMessage { role: "system".to_string(), content: "❌ Użycie: /memory | /memory show <label> | /memory clear <label> | /memory push [msg] | /memory pull | /memory status | /memory remote <url>".to_string() });
+                        }
+                    }
+                } else {
+                    self.messages.push(ChatMessage { role: "system".to_string(), content: mb.status_report() });
+                }
+            }
+            "/doctor" => {
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                self.messages.push(ChatMessage { role: "system".to_string(), content: mb.doctor_report() });
+            }
+            "/skill-learn" => {
+                // Refleksja: każe agentowi przemyśleć sesję i utworzyć learned skill z doświadczenia.
+                let all_msgs: Vec<&ChatMessage> = self.messages.iter()
+                    .filter(|m| m.role == "user" || m.role == "assistant")
+                    .collect();
+                let start_idx = all_msgs.len().saturating_sub(20);
+                let history_summary: String = all_msgs[start_idx..]
+                    .iter()
+                    .map(|m| format!("[{}]: {}", m.role, m.content.chars().take(400).collect::<String>()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let skill_name = parts.get(1).copied().unwrap_or("");
+                let name_hint = if skill_name.is_empty() {
+                    "Wybierz sam krótką, kebab-case nazwę (np. db-migration, deploy-vercel).".to_string()
+                } else {
+                    format!("Użyj nazwy: '{skill_name}'.", )
+                };
+                let learn_prompt = format!(
+                    "SKILL LEARNING /skill-learn — przeanalizuj poniższą sesję i utwórz learned skill używając create_skill(name, content).\n\nZasady:\n1. Wyciągnij UOGÓLNIONĄ procedurę z tej sesji — nie loguj konkretów, zrób reużywalny skill.\n2. {name_hint}\n3. Treść SKILL.md w markdown: krótki opis kiedy używać + ponumerowane kroki + przykłady komend/kodu.\n4. Po utworzeniu skilla, krótko podsumuj co zapisałeś.\n\nPodsumowanie ostatnich wiadomości sesji:\n{history_summary}\n\nZacznij analizę i utwórz skill."
+                );
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: "🎓 /skill-learn — tworzenie learned skilla z doświadczenia...".to_string(),
+                });
+                self.start_agent_stream(learn_prompt);
+                return Ok(());
+            }
+            "/remember" => {
+                // Refleksja: każe agentowi przemyśleć sesję i zapisać wnioski do memory blocks.
+                let all_msgs: Vec<&ChatMessage> = self.messages.iter()
+                    .filter(|m| m.role == "user" || m.role == "assistant")
+                    .collect();
+                let start_idx = all_msgs.len().saturating_sub(20);
+                let history_summary: String = all_msgs[start_idx..]
+                    .iter()
+                    .map(|m| format!("[{}]: {}", m.role, m.content.chars().take(300).collect::<String>()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let reflection_prompt = format!(
+                    "REFLEKSJA /remember — przeanalizuj poniższą sesję i zapisz wnioski do memory blocks używając core_memory_append (lub core_memory_replace jeśli aktualizujesz istniejącą wiedzę).\n\nZasady:\n1. GENERALIZUJ — nie loguj pojedynczych zdarzeń, wyciągnij wzorce/preferencje/wiedzę o projekcie.\n2. Wybierz odpowiedni blok: 'human' (preferencje usera), 'project' (wiedza o tym projekcie), 'persona' (jak Ty jako agent powinieneś działać).\n3. Nie duplikuj wiedzy już zapisanej — jeśli coś się zmieniło, użyj core_memory_replace.\n4. Krótko i konkretnie — bloki to cenny real estate (limit 4000 znaków).\n5. Po zapisaniu, krótko podsumuj co zapisałeś i do których bloków.\n\nPodsumowanie ostatnich wiadomości sesji:\n{history_summary}\n\nZacznij refleksję i zapisz wnioski do pamięci."
+                );
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: "🧠 /remember — refleksja i zapis do memory blocks...".to_string(),
+                });
+                self.start_agent_stream(reflection_prompt);
+                return Ok(());
+            }
             "/theme" => {
                 if parts.len() > 1 {
                     if let Some(mode) = AppTheme::parse(parts[1]) {
