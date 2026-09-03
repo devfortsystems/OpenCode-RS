@@ -1,16 +1,23 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::AppConfig;
 
+pub mod acp;
 pub mod bridge;
+pub mod cli_subprocess;
+pub mod devin_cloud;
 pub mod direct;
 pub mod subprocess;
 
+use acp::AcpClientProvider;
 use bridge::BridgeProvider;
+use cli_subprocess::{CliSpec, CliSubprocessProvider};
+use devin_cloud::DevinCloudProvider;
 use direct::DirectApiProvider;
 use subprocess::SubprocessProvider;
 
@@ -33,6 +40,7 @@ pub trait Provider: Send + Sync {
 
 pub struct ProviderRouter {
     config: AppConfig,
+    work_dir: PathBuf,
     bridge: Arc<BridgeProvider>,
     direct_gemini: Option<Arc<DirectApiProvider>>,
     direct_groq: Option<Arc<DirectApiProvider>>,
@@ -42,15 +50,44 @@ pub struct ProviderRouter {
     direct_mistral: Option<Arc<DirectApiProvider>>,
     direct_openrouter: Option<Arc<DirectApiProvider>>,
     direct_commandcode: Option<Arc<DirectApiProvider>>,
+    // Devin Cloud (api.devin.ai v3) — sesje w chmurze. None jeśli brak DEVIN_API_KEY/DEVIN_ORG_ID.
+    devin_cloud: Option<Arc<DevinCloudProvider>>,
+    // ACP (Agent Client Protocol) — pełna integracja JSON-RPC over stdio z `devin acp`.
+    // Bogatsza niż subprocess: streaming, plan updates, tool call visibility, thought streaming.
+    devin_acp: Arc<AcpClientProvider>,
+    devin_acp_opus: Arc<AcpClientProvider>,
+    devin_acp_sonnet: Arc<AcpClientProvider>,
+    devin_acp_codex: Arc<AcpClientProvider>,
+    // OpenCode ACP (oryginalny opencode v1.18.21, 127 modeli w tym darmowe).
+    // Nie wymaga wtyczki — to CLI (`opencode acp`), nie bridge.
+    opencode_acp: Arc<AcpClientProvider>,
+    opencode_acp_free: Arc<AcpClientProvider>,
+    opencode_acp_go: Arc<AcpClientProvider>,
+    // Gemini CLI ACP (darmowy tier 60 req/min, wymaga `gemini` login).
+    gemini_acp: Arc<AcpClientProvider>,
+    // Claude Code ACP (wymaga ANTHROPIC_API_KEY lub Claude Pro/Max).
+    claude_code_acp: Arc<AcpClientProvider>,
+    // Codex ACP (wymaga OPENAI_API_KEY).
+    codex_acp: Arc<AcpClientProvider>,
     ollama: Arc<DirectApiProvider>,
     lmstudio: Arc<DirectApiProvider>,
     llamacpp: Arc<DirectApiProvider>,
     custom_endpoints: Vec<(String, Arc<DirectApiProvider>)>,
     commandcode: Arc<SubprocessProvider>,
+    // Agenci-CLI uruchamiani jako subprocess (Devin, Claude Code, Aider, Gemini, Codex).
+    // opencode-rs jako meta-agent deleguje zadania do tych agentów.
+    devin_cli: Arc<CliSubprocessProvider>,
+    claude_code_cli: Arc<CliSubprocessProvider>,
+    aider_cli: Arc<CliSubprocessProvider>,
+    gemini_cli: Arc<CliSubprocessProvider>,
+    codex_cli: Arc<CliSubprocessProvider>,
+    kilo_run: Arc<CliSubprocessProvider>,
+    kilo_run_free: Arc<CliSubprocessProvider>,
+    cline_cli: Arc<CliSubprocessProvider>,
 }
 
 impl ProviderRouter {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, work_dir: PathBuf) -> Self {
         let bridge = Arc::new(BridgeProvider::new(config.bridge_url.clone()));
         
         let direct_gemini = config.direct_gemini_api_key.as_ref().map(|k| {
@@ -109,6 +146,41 @@ impl ProviderRouter {
             ))
         });
 
+        // Devin Cloud (api.devin.ai v3) — wymaga DEVIN_API_KEY + DEVIN_ORG_ID.
+        // Jak brak, provider jest None i modele devin-cloud-* nie są dostępne.
+        let devin_cloud = match (&config.devin_api_key, &config.devin_org_id) {
+            (Some(key), Some(org)) if !key.is_empty() && !org.is_empty() => {
+                Some(Arc::new(DevinCloudProvider::new(key.clone(), org.clone(), work_dir.clone())))
+            }
+            _ => None,
+        };
+
+        // ACP (Agent Client Protocol) — pełna integracja JSON-RPC z `devin acp`.
+        // work_dir potrzebne do wstrzykiwania planu + memory blocks w prompt delegata.
+        let devin_acp = Arc::new(AcpClientProvider::devin(None, work_dir.clone()));
+        let devin_acp_opus = Arc::new(AcpClientProvider::devin(Some("opus"), work_dir.clone()));
+        let devin_acp_sonnet = Arc::new(AcpClientProvider::devin(Some("sonnet"), work_dir.clone()));
+        let devin_acp_codex = Arc::new(AcpClientProvider::devin(Some("codex"), work_dir.clone()));
+
+        // OpenCode ACP (oryginalny opencode) — 127 modeli, w tym darmowe.
+        // Nie wymaga wtyczki — to CLI. Model przez env var OPENCODE_MODEL.
+        let opencode_acp = Arc::new(AcpClientProvider::opencode(None, work_dir.clone()));
+        let opencode_acp_free = Arc::new(AcpClientProvider::opencode(
+            Some("opencode/ling-3.0-flash-fin-free"),
+            work_dir.clone(),
+        ));
+        let opencode_acp_go = Arc::new(AcpClientProvider::opencode(
+            Some("opencode-go/glm-5.2"),
+            work_dir.clone(),
+        ));
+
+        // Gemini CLI ACP — darmowy tier (60 req/min, 1000/day), wymaga `gemini` login.
+        let gemini_acp = Arc::new(AcpClientProvider::gemini(work_dir.clone()));
+        // Claude Code ACP — wymaga ANTHROPIC_API_KEY lub Claude Pro/Max subscription.
+        let claude_code_acp = Arc::new(AcpClientProvider::claude_code(work_dir.clone()));
+        // Codex ACP — wymaga OPENAI_API_KEY.
+        let codex_acp = Arc::new(AcpClientProvider::codex(work_dir.clone()));
+
         let ollama = Arc::new(DirectApiProvider::new(
             config.ollama_url.clone().unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
             None,
@@ -134,8 +206,21 @@ impl ProviderRouter {
 
         let commandcode = Arc::new(SubprocessProvider::new("commandcode".to_string()));
 
+        // Agenci-CLI jako subprocess — opencode-rs jako meta-agent deleguje do nich.
+        let devin_cli = Arc::new(CliSubprocessProvider::new(CliSpec::devin()));
+        let claude_code_cli = Arc::new(CliSubprocessProvider::new(CliSpec::claude_code()));
+        let aider_cli = Arc::new(CliSubprocessProvider::new(CliSpec::aider()));
+        let gemini_cli = Arc::new(CliSubprocessProvider::new(CliSpec::gemini_cli()));
+        let codex_cli = Arc::new(CliSubprocessProvider::new(CliSpec::codex_cli()));
+        // Kilo Code (fork opencode, 302 modele, 17 darmowych) — `kilo run -m <model>`.
+        let kilo_run = Arc::new(CliSubprocessProvider::new(CliSpec::kilo_run()));
+        let kilo_run_free = Arc::new(CliSubprocessProvider::new(CliSpec::kilo_run()));
+        // Cline CLI — `cline --auto-approve true -m <model>`.
+        let cline_cli = Arc::new(CliSubprocessProvider::new(CliSpec::cline()));
+
         Self {
             config,
+            work_dir,
             bridge,
             direct_gemini,
             direct_groq,
@@ -145,11 +230,30 @@ impl ProviderRouter {
             direct_mistral,
             direct_openrouter,
             direct_commandcode,
+            devin_cloud,
+            devin_acp,
+            devin_acp_opus,
+            devin_acp_sonnet,
+            devin_acp_codex,
+            opencode_acp,
+            opencode_acp_free,
+            opencode_acp_go,
+            gemini_acp,
+            claude_code_acp,
+            codex_acp,
             ollama,
             lmstudio,
             llamacpp,
             custom_endpoints,
             commandcode,
+            devin_cli,
+            claude_code_cli,
+            aider_cli,
+            gemini_cli,
+            codex_cli,
+            kilo_run,
+            kilo_run_free,
+            cline_cli,
         }
     }
 
@@ -215,6 +319,59 @@ impl ProviderRouter {
             ("commandcode-o3-mini", "o3-mini High Reasoning (Command Code)", "commandcode"),
             ("commandcode-deepseek-r1", "DeepSeek R1 (Command Code)", "commandcode"),
             ("commandcode-cli", "Command Code CLI (Direct Subprocess Native)", "commandcode"),
+
+            // 🤝 Agenci-CLI jako subprocess (opencode-rs jako meta-agent deleguje zadania)
+            // Każdy model = uruchomienie agenta-CLI w trybie non-interactive (-p / --message).
+            // Modele z sufiksem (-opus, -sonnet) przekazują model do CLI przez --model flag.
+            ("devin-cli", "Devin CLI (Subprocess, domyślny model)", "devin-cli"),
+            ("devin-cli-opus", "Devin CLI → Claude Opus (Subprocess)", "devin-cli"),
+            ("devin-cli-sonnet", "Devin CLI → Claude Sonnet (Subprocess)", "devin-cli"),
+            ("devin-cli-codex", "Devin CLI → Codex (Subprocess)", "devin-cli"),
+            ("claude-code-cli", "Claude Code CLI (Subprocess, domyślny)", "devin-cli"),
+            ("claude-code-cli-sonnet", "Claude Code CLI → Sonnet (Subprocess)", "devin-cli"),
+            ("claude-code-cli-opus", "Claude Code CLI → Opus (Subprocess)", "devin-cli"),
+            ("aider-cli", "Aider CLI (Subprocess, domyślny model)", "devin-cli"),
+            ("gemini-cli", "Gemini CLI (Subprocess, domyślny)", "devin-cli"),
+            ("codex-cli", "Codex CLI (Subprocess)", "devin-cli"),
+
+            // ☁️ Devin Cloud (api.devin.ai v3) — sesje w chmurze (pełny VM, shell, browser)
+            // Wymaga DEVIN_API_KEY + DEVIN_ORG_ID. devin_mode = tryb agenta.
+            ("devin-cloud", "Devin Cloud (Normal mode, api.devin.ai v3)", "devin-cloud"),
+            ("devin-cloud-fast", "Devin Cloud Fast (2x szybszy, 4x droższy)", "devin-cloud"),
+            ("devin-cloud-lite", "Devin Cloud Lite (lekki, tani)", "devin-cloud"),
+            ("devin-cloud-ultra", "Devin Cloud Ultra (najpotężniejszy)", "devin-cloud"),
+            ("devin-cloud-fusion", "Devin Cloud Fusion (hybrydowy)", "devin-cloud"),
+
+            // 🔌 ACP (Agent Client Protocol) — pełna integracja JSON-RPC z `devin acp`
+            // Bogatsza niż devin-cli (subprocess): streaming, plan, tool calls, thoughts.
+            ("devin-acp", "Devin ACP (JSON-RPC, domyślny model)", "devin-acp"),
+            ("devin-acp-opus", "Devin ACP → Opus (JSON-RPC streaming)", "devin-acp"),
+            ("devin-acp-sonnet", "Devin ACP → Sonnet (JSON-RPC streaming)", "devin-acp"),
+            ("devin-acp-codex", "Devin ACP → Codex (JSON-RPC streaming)", "devin-acp"),
+
+            // 🔌 OpenCode ACP (oryginalny opencode v1.18.21, 127 modeli w tym darmowe)
+            // Nie wymaga wtyczki — to CLI (`opencode acp`), nie bridge.
+            ("opencode-acp", "OpenCode ACP (oryginalny, domyślny model)", "opencode-acp"),
+            ("opencode-acp-free", "OpenCode ACP → Ling 3.0 Flash (DARMOWY)", "opencode-acp"),
+            ("opencode-acp-go", "OpenCode ACP → GLM-5.2 (OpenCode Go)", "opencode-acp"),
+
+            // 🔌 Kilo Code (fork opencode, 302 modele, 17 darmowych) — `kilo run -m <model>`
+            // Nie wymaga wtyczki — to CLI. Darmowe: nvidia nemotron, minimax, ling, poolside, etc.
+            ("kilo-run", "Kilo Code (domyślny model)", "kilo-run"),
+            ("kilo-run-free", "Kilo Code → Nemotron 3.5 Lightning (DARMOWY)", "kilo-run"),
+
+            // 🔌 Cline CLI (`cline --auto-approve true -m <model>`)
+            // Wymaga API key (cline auth). Ma też --acp ale one-shot jest prostsze.
+            ("cline-cli", "Cline CLI (auto-approve, domyślny model)", "cline-cli"),
+
+            // 🔌 Gemini CLI ACP (darmowy tier 60 req/min, wymaga `gemini` login)
+            ("gemini-acp", "Gemini CLI ACP (DARMOWY tier, Google account)", "gemini-acp"),
+
+            // 🔌 Claude Code ACP (wymaga ANTHROPIC_API_KEY lub Claude Pro/Max)
+            ("claude-code-acp", "Claude Code ACP (Anthropic, Pro/Max lub API key)", "claude-code-acp"),
+
+            // 🔌 Codex ACP (wymaga OPENAI_API_KEY)
+            ("codex-acp", "Codex ACP (OpenAI, wymaga API key)", "codex-acp"),
 
             // 🌐 Direct Gemini API
             ("gemini-3.7-flash", "Gemini 3.7 Flash (Direct API)", "gemini"),
@@ -305,6 +462,98 @@ impl ProviderRouter {
         messages: &[ChatMessage],
         token_tx: Sender<String>,
     ) -> Result<()> {
+        // ─── Agenci-CLI jako subprocess (meta-agent delegation) ───────────
+        // Każdy agent-CLI uruchamiany w trybie non-interactive (-p / --message).
+        // Modele z sufiksem (np. "devin-cli-opus") przekazują model do CLI.
+        if model == "devin-cli" || model.starts_with("devin-cli-") {
+            return self.devin_cli.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "claude-code-cli" || model.starts_with("claude-code-cli-") {
+            return self.claude_code_cli.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "aider-cli" || model.starts_with("aider-cli-") {
+            return self.aider_cli.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "gemini-cli" || model.starts_with("gemini-cli-") {
+            return self.gemini_cli.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "codex-cli" || model.starts_with("codex-cli-") {
+            return self.codex_cli.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── Devin Cloud (api.devin.ai v3) — sesje w chmurze ──────────────
+        // Wymaga DEVIN_API_KEY + DEVIN_ORG_ID. Jak brak, błąd z instrukcją.
+        if model == "devin-cloud" || model.starts_with("devin-cloud-") {
+            if let Some(ref cloud) = self.devin_cloud {
+                return cloud.stream_chat(model, messages, token_tx).await;
+            } else {
+                anyhow::bail!(
+                    "Devin Cloud wymaga DEVIN_API_KEY + DEVIN_ORG_ID.\n\
+                     Ustaw zmienne środowiskowe lub dodaj do config.json:\n\
+                     - DEVIN_API_KEY: service user key (prefix 'cog_') z app.devin.ai → Settings → Service Users\n\
+                     - DEVIN_ORG_ID: organization ID (prefix 'org-') z tej samej strony\n\
+                     Alternatywa: użyj modelu 'devin-cli' (lokalny Devin CLI, nie wymaga API key)."
+                );
+            }
+        }
+
+        // ─── ACP (Agent Client Protocol) — pełny JSON-RPC over stdio ──────
+        // Bogatsza integracja niż devin-cli: streaming, plan, tool calls, thoughts.
+        if model == "devin-acp" {
+            return self.devin_acp.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "devin-acp-opus" {
+            return self.devin_acp_opus.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "devin-acp-sonnet" {
+            return self.devin_acp_sonnet.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "devin-acp-codex" {
+            return self.devin_acp_codex.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── OpenCode ACP (oryginalny opencode, 127 modeli) ──────────────
+        // Nie wymaga wtyczki — to CLI. Model przez env var OPENCODE_MODEL.
+        if model == "opencode-acp" {
+            return self.opencode_acp.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "opencode-acp-free" {
+            return self.opencode_acp_free.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "opencode-acp-go" {
+            return self.opencode_acp_go.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── Kilo Code (fork opencode, 302 modele, 17 darmowych) ─────────
+        // `kilo run -m <model>` — one-shot, bo `kilo acp` nie ma --model flag.
+        if model == "kilo-run" {
+            return self.kilo_run.stream_chat(model, messages, token_tx).await;
+        }
+        if model == "kilo-run-free" {
+            // Darmowy model: nvidia/nemotron-3.5-lightning:free
+            return self.kilo_run_free.stream_chat("kilo/nvidia/nemotron-3.5-lightning:free", messages, token_tx).await;
+        }
+
+        // ─── Cline CLI ────────────────────────────────────────────────────
+        if model == "cline-cli" || model == "cline" {
+            return self.cline_cli.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── Gemini CLI ACP (darmowy tier, Google account) ────────────────
+        if model == "gemini-acp" {
+            return self.gemini_acp.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── Claude Code ACP (Anthropic, Pro/Max lub API key) ─────────────
+        if model == "claude-code-acp" {
+            return self.claude_code_acp.stream_chat(model, messages, token_tx).await;
+        }
+
+        // ─── Codex ACP (OpenAI, wymaga API key) ───────────────────────────
+        if model == "codex-acp" {
+            return self.codex_acp.stream_chat(model, messages, token_tx).await;
+        }
+
         if model == "commandcode-cli" || model == "commandcode" || model == "cmd" || model == "cmd-cli" {
             return self.commandcode.stream_chat(model, messages, token_tx).await;
         }
@@ -507,7 +756,7 @@ mod tests {
     #[test]
     fn test_get_available_models_count_and_aliases() {
         let cfg = AppConfig::default();
-        let router = ProviderRouter::new(cfg);
+        let router = ProviderRouter::new(cfg, std::env::temp_dir());
         let models = router.get_available_models();
         assert!(models.len() >= 70, "should have 75+ models, got {}", models.len());
         assert!(models.iter().any(|(id,_,_)| *id=="cursor-claude-3-7-sonnet"));
@@ -527,7 +776,7 @@ mod tests {
         rt.block_on(async {
             let mut cfg = AppConfig::default();
             cfg.favorite_models = vec!["cursor-claude-3-7-sonnet".to_string()];
-            let _router = ProviderRouter::new(cfg.clone());
+            let _router = ProviderRouter::new(cfg.clone(), std::env::temp_dir());
             let app = crate::app::App::new(std::env::temp_dir(), cfg);
             assert!(!app.filtered_models().is_empty());
             // fav filter should contain the favorite

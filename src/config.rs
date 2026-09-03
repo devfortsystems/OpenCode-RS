@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub direct_openrouter_api_key: Option<String>,
     pub commandcode_api_key: Option<String>,
     pub commandcode_base_url: Option<String>,
+    pub devin_api_key: Option<String>,       // DEVIN_API_KEY — service user key (cog_ prefix) dla api.devin.ai v3
+    pub devin_org_id: Option<String>,       // DEVIN_ORG_ID — org ID (org- prefix) dla api.devin.ai v3
     pub ollama_url: Option<String>,
     pub lmstudio_url: Option<String>,
     pub llamacpp_url: Option<String>,
@@ -72,6 +74,8 @@ impl Default for AppConfig {
             direct_openrouter_api_key: std::env::var("OPENROUTER_API_KEY").ok(),
             commandcode_api_key: std::env::var("COMMANDCODE_API_KEY").ok(),
             commandcode_base_url: Some(std::env::var("COMMANDCODE_BASE_URL").unwrap_or_else(|_| "https://api.commandcode.ai/v1".to_string())),
+            devin_api_key: std::env::var("DEVIN_API_KEY").ok(),
+            devin_org_id: std::env::var("DEVIN_ORG_ID").ok(),
             ollama_url: Some("http://localhost:11434/v1".to_string()),
             lmstudio_url: Some("http://localhost:1234/v1".to_string()),
             llamacpp_url: Some("http://localhost:8080/v1".to_string()),

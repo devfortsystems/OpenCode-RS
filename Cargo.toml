@@ -32,6 +32,7 @@ directories = "6.0"
 async-trait = "0.1"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 dotenvy = "0.15"
+agent-client-protocol = "2.0"
 
 [profile.release]
 opt-level = 3
