@@ -73,6 +73,7 @@ impl Agent {
         history: &[ChatMessage],
         user_input: &str,
         token_tx: Sender<String>,
+        context_tx: Sender<(usize, usize)>,
     ) -> Result<String> {
         let system_prompt = self.context.build_system_prompt(active_model, mode);
         let resolved_prompt = self.context.resolve_smart_context(user_input);
@@ -154,6 +155,13 @@ impl Agent {
                     ),
                 });
             }
+
+            // Wyślij realny rozmiar contextu do UI (pełne tool outputs, nie ucięte).
+            // Token counter w UI będzie pokazywał realne zużycie context window.
+            // Używaj TokenEstimator zamiast chars/4 — lepsza estymacja dla kodu.
+            let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+            let total_tokens: usize = crate::cost::TokenEstimator::estimate_messages(&messages);
+            let _ = context_tx.send((total_chars, total_tokens)).await;
 
             let _ = token_tx.send("\n🔄 **[Agent]:** Analizowanie wyników narzędzi i kontynuacja...\n".to_string()).await;
         }
@@ -263,6 +271,71 @@ impl Agent {
                 let sm = crate::skills::SkillsManager::new(self.work_dir.clone());
                 let path = sm.create_learned_skill(name, content)?;
                 Ok(format!("✅ Utworzono learned skill '{name}' → {}\nSkill będzie automatycznie wczytywany w przyszłych sesjach.", path.display()))
+            }
+            // ── Plan projektu (persistentny, per-projekt) ──────────────────
+            "plan_set" => {
+                let goal = args.get("goal").and_then(|v| v.as_str()).unwrap_or_default();
+                if goal.is_empty() {
+                    return Err(anyhow::anyhow!("plan_set wymaga 'goal' (główny cel planu)"));
+                }
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.set_goal(goal);
+                plan.save(&self.work_dir)?;
+                Ok(format!("✅ Ustawiono cel planu: {}\nPlan zapisany w .opencode/plan.md — przetrwa restart UI.", plan.goal))
+            }
+            "plan_add_step" => {
+                let description = args.get("description").and_then(|v| v.as_str()).unwrap_or_default();
+                if description.is_empty() {
+                    return Err(anyhow::anyhow!("plan_add_step wymaga 'description' (opis kroku)"));
+                }
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.add_step(description);
+                let n = plan.steps.len();
+                plan.save(&self.work_dir)?;
+                Ok(format!("✅ Dodano krok {n}: {description}\nPlan ma teraz {n} kroków."))
+            }
+            "plan_complete_step" => {
+                let step_number = args.get("step_number")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| anyhow::anyhow!("plan_complete_step wymaga 'step_number' (liczba >= 1)"))?
+                    as usize;
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.toggle_step(step_number)?;
+                let (total, done) = plan.stats();
+                plan.save(&self.work_dir)?;
+                let step = &plan.steps[step_number - 1];
+                let status = if step.completed { "ukończony ✅" } else { "cofnięty ⬜" };
+                Ok(format!("✅ Krok {step_number}: {status}\nPostęp: {done}/{total} kroków ukończonych."))
+            }
+            "plan_update_step" => {
+                let step_number = args.get("step_number")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| anyhow::anyhow!("plan_update_step wymaga 'step_number' (liczba >= 1)"))?
+                    as usize;
+                let description = args.get("description").and_then(|v| v.as_str()).unwrap_or_default();
+                if description.is_empty() {
+                    return Err(anyhow::anyhow!("plan_update_step wymaga 'description' (nowy opis)"));
+                }
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.update_step(step_number, description)?;
+                plan.save(&self.work_dir)?;
+                Ok(format!("✅ Zaktualizowano krok {step_number}: {}", plan.steps[step_number - 1].description))
+            }
+            "plan_add_note" => {
+                let note = args.get("note").and_then(|v| v.as_str()).unwrap_or_default();
+                if note.is_empty() {
+                    return Err(anyhow::anyhow!("plan_add_note wymaga 'note' (treść notatki)"));
+                }
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.add_note(note);
+                plan.save(&self.work_dir)?;
+                Ok(format!("✅ Dodano notatkę do planu:\n{note}"))
+            }
+            "plan_clear" => {
+                let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                plan.clear();
+                plan.save(&self.work_dir)?;
+                Ok("✅ Wyczyszczono cały plan (.opencode/plan.md).".to_string())
             }
             _ => {
                 // Sprawdź fallback do narzędzia MCP jeśli przekazano pole "server"

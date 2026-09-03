@@ -1,37 +1,39 @@
 #![allow(dead_code)]
 
-mod agent;
-mod app;
-mod auth;
-mod config;
-mod cost;
-mod environment;
-mod diff;
-mod file_manager;
-mod pty;
-mod git;
-mod hermes;
-mod live_grep;
-mod lsp;
-mod i18n;
-mod importer;
-mod palette;
-mod plugins;
-mod providers;
-mod runtime;
-mod search;
-mod session;
-mod sync;
-mod syntax;
-mod templates;
-mod theme;
-mod ui;
-mod update;
-mod web;
-mod taste;
-mod skills;
-mod memory;
-mod e2e;
+// Wszystkie moduły upublicznione — lib.rs re-eksportuje je dla testów integracyjnych.
+// `#![allow(dead_code)]` eliminuje ostrzeżenia o nieużywanych w binary.
+pub mod agent;
+pub mod app;
+pub mod auth;
+pub mod config;
+pub mod cost;
+pub mod environment;
+pub mod diff;
+pub mod file_manager;
+pub mod pty;
+pub mod git;
+pub mod hermes;
+pub mod live_grep;
+pub mod lsp;
+pub mod i18n;
+pub mod importer;
+pub mod palette;
+pub mod plugins;
+pub mod providers;
+pub mod runtime;
+pub mod search;
+pub mod session;
+pub mod sync;
+pub mod syntax;
+pub mod templates;
+pub mod theme;
+pub mod ui;
+pub mod update;
+pub mod web;
+pub mod taste;
+pub mod skills;
+pub mod memory;
+pub mod e2e;
 
 use anyhow::Result;
 use clap::Parser;
@@ -195,7 +197,7 @@ async fn run_cli_mode(
     prompt: String,
     continue_session: bool,
 ) -> Result<()> {
-    let router = Arc::new(ProviderRouter::new(config.clone()));
+    let router = Arc::new(ProviderRouter::new(config.clone(), work_dir.clone()));
     let agent = Arc::new(crate::agent::Agent::new(router.clone(), work_dir.clone()));
     let session_manager = SessionManager::new(work_dir.clone(), &config.storage_mode);
     let active_model = config.default_model.clone();
@@ -227,8 +229,9 @@ async fn run_cli_mode(
     let history = session.messages.clone();
     let model_clone = active_model.clone();
 
+    let (ctx_tx, _ctx_rx) = tokio::sync::mpsc::channel::<(usize, usize)>(10);
     let exec_res = agent_clone
-        .process_user_prompt(&model_clone, "coder", &history, &prompt, token_tx)
+        .process_user_prompt(&model_clone, "coder", &history, &prompt, token_tx, ctx_tx)
         .await;
 
     let full_reply = printer_handle.await.unwrap_or_default();
@@ -278,7 +281,7 @@ async fn run_test_all(work_dir: PathBuf, mut config: AppConfig) -> Result<()> {
         }
     }
     println!("   Bridge 8765-8767: {}", if bridge_ok { format!("✅ reachable :{} ({})", bridge_port, base.replace("8765", &bridge_port)) } else { "⚪ offline (Bridge models będą FAIL — uruchom wtyczkę Cursor/Antigravity/Trae, sprawdź curl http://127.0.0.1:8765/health)".to_string() });
-    let router = ProviderRouter::new(config);
+    let router = ProviderRouter::new(config, std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let models = router.get_available_models();
     println!("{:<35} {:<15} {:<10} {}", "MODEL", "PROVIDER", "STATUS", "DETAIL");
     println!("{}", "-".repeat(110));

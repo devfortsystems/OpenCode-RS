@@ -51,6 +51,7 @@ impl SubagentManager {
                 "Jesteś wyspecjalizowanym podagentem (Subagent). Twoje zadanie: {prompt_clone}\nWykonaj je autonomicznie, używając dostępnych narzędzi, a na końcu przedstaw zwięzły raport."
             );
 
+            let (ctx_tx, _ctx_rx) = tokio::sync::mpsc::channel::<(usize, usize)>(10);
             let res = agent
                 .process_user_prompt(
                     &active_model,
@@ -58,6 +59,7 @@ impl SubagentManager {
                     &[],
                     &prompt_for_agent,
                     token_tx,
+                    ctx_tx,
                 )
                 .await;
 

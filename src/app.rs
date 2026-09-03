@@ -25,6 +25,9 @@ pub enum AppEvent {
     Token(String),
     StreamFinished(String),
     StreamError(String),
+    /// Realny rozmiar contextu agenta: (chars, tokens).
+    /// Wysyłany po każdej iteracji ReAct, żeby token counter pokazywał realne zużycie.
+    ContextUpdate(usize, usize),
     StatusNotification(String),
     ModelsDiscovered(Vec<(String, String, String)>),
 }
@@ -50,6 +53,10 @@ pub struct App {
     pub auto_check: bool,
     pub is_streaming: bool,
     pub streaming_buffer: String,
+    /// Realny rozmiar contextu agenta (pełne tool outputs, nie ucięte do 4000 znaków).
+    /// Trackowany przez AppEvent::ContextUpdate wysyłany po każdej iteracji ReAct.
+    pub real_context_chars: usize,
+    pub real_context_tokens: usize,
     pub scroll_offset: u16,
 
     pub show_model_picker: bool,
@@ -85,7 +92,7 @@ pub struct App {
 impl App {
     pub fn new(work_dir: PathBuf, config: AppConfig) -> Self {
         let (event_tx, event_rx) = mpsc::channel(100);
-        let router = Arc::new(ProviderRouter::new(config.clone()));
+        let router = Arc::new(ProviderRouter::new(config.clone(), work_dir.clone()));
         let agent = Arc::new(Agent::new(router.clone(), work_dir.clone()));
         let session_manager = Arc::new(SessionManager::new(work_dir.clone(), &config.storage_mode));
         let subagent_manager = Arc::new(crate::agent::subagent::SubagentManager::new(work_dir.clone(), router.clone()));
@@ -146,6 +153,8 @@ impl App {
             auto_check: false,
             is_streaming: false,
             streaming_buffer: String::new(),
+            real_context_chars: 0,
+            real_context_tokens: 0,
             scroll_offset: 0,
             show_model_picker: false,
             model_picker_index: 0,
@@ -239,17 +248,28 @@ impl App {
     }
 
     pub fn estimate_tokens_and_cost(&self) -> (usize, usize, usize, String) {
-        let mut total_chars = 0;
-        for m in &self.messages {
-            total_chars += m.content.len();
-        }
-        total_chars += self.streaming_buffer.len();
+        // Gdy agent streamuje (is_streaming=true), używaj real_context_tokens (pełne tool outputs).
+        // Gdy nie streamuje, licz z self.messages + system prompt.
+        let est_tokens = if self.is_streaming && self.real_context_tokens > 0 {
+            // Realny context agenta: system prompt + historia + pełne tool outputs.
+            // real_context_tokens już zawiera estymację TokenEstimator dla całego contextu.
+            // Dodaj streaming_buffer (aktualna odpowiedź w trakcie generowania).
+            self.real_context_tokens + crate::cost::TokenEstimator::estimate(&self.streaming_buffer)
+        } else {
+            // Tryb idle: licz z self.messages + system prompt.
+            let system_prompt = self.agent.context().build_system_prompt(&self.active_model, &self.agent_mode);
+            let mut all_content = String::new();
+            all_content.push_str(&system_prompt);
+            for m in &self.messages {
+                all_content.push_str(&m.content);
+            }
+            crate::cost::TokenEstimator::estimate(&all_content)
+        };
 
-        let est_tokens = total_chars / 4;
         let max_tokens = 128_000;
         let percent = ((est_tokens as f32 / max_tokens as f32) * 100.0).min(100.0) as usize;
 
-        let cost = CostEstimator::estimate_cost(&self.active_model, total_chars);
+        let cost = CostEstimator::estimate_cost_from_tokens(&self.active_model, est_tokens);
         let cost_str = CostEstimator::format_cost(cost);
 
         (est_tokens, max_tokens, percent, cost_str)
@@ -949,6 +969,7 @@ impl App {
         let mode = self.agent_mode.clone();
         let history = self.messages.clone();
         let (token_tx, mut token_rx) = mpsc::channel(100);
+        let (context_tx, mut context_rx) = mpsc::channel::<(usize, usize)>(10);
         let app_tx = self.event_tx.clone();
 
         // Task streamujący tokeny
@@ -959,9 +980,17 @@ impl App {
             }
         });
 
+        // Task streamujący realny rozmiar contextu (pełne tool outputs)
+        let app_tx_ctx = app_tx.clone();
+        tokio::spawn(async move {
+            while let Some((chars, tokens)) = context_rx.recv().await {
+                let _ = app_tx_ctx.send(AppEvent::ContextUpdate(chars, tokens)).await;
+            }
+        });
+
         // Task pętli agenta
         tokio::spawn(async move {
-            match agent.process_user_prompt(&model, &mode, &history, &prompt, token_tx).await {
+            match agent.process_user_prompt(&model, &mode, &history, &prompt, token_tx, context_tx).await {
                 Ok(used_model) => {
                     let _ = app_tx.send(AppEvent::StreamFinished(used_model)).await;
                 }
@@ -1163,6 +1192,62 @@ impl App {
             "/doctor" => {
                 let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
                 self.messages.push(ChatMessage { role: "system".to_string(), content: mb.doctor_report() });
+            }
+            "/palace" => {
+                // Pełny drzewiasty podgląd stanu pamięci (jak Letta /palace):
+                // memory blocks + learned skills + wszystkie skille + placeholder archival.
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                self.messages.push(ChatMessage { role: "system".to_string(), content: mb.palace_report() });
+            }
+            "/plan" => {
+                // Podgląd persistentnego planu projektu (.opencode/plan.md).
+                // Bez argumentów — pokaż plan. Z argumentem "clear" — wyczyść.
+                let plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                let sub = parts.get(1).copied().unwrap_or("");
+                if sub == "clear" {
+                    let mut p = plan;
+                    p.clear();
+                    p.save(&self.work_dir).ok();
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: "🧹 Wyczyszczono plan projektu (.opencode/plan.md).".to_string(),
+                    });
+                } else if plan.goal.is_empty() && plan.steps.is_empty() && plan.notes.is_empty() {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: "📋 Plan projektu jest pusty.\n\nAgent może utworzyć plan przez tools (plan_set, plan_add_step, ...), albo użyj /plan <instrukcja> żeby poprosić agenta o zaplanowanie.\n\nPrzykład: /plan Zaplanuj migrację bazy danych z PostgreSQL do SQLite".to_string(),
+                    });
+                } else {
+                    let (total, done) = plan.stats();
+                    let progress = if total > 0 {
+                        format!("\n\nPostęp: {done}/{total} kroków ukończonych ({}%)", (done * 100) / total)
+                    } else {
+                        String::new()
+                    };
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("📋 PLAN PROJEKTU (.opencode/plan.md){progress}\n\n{}", plan.to_markdown()),
+                    });
+                }
+                // Jeśli podano instrukcję (np. "/plan Zaplanuj migrację..."), wyślij do agenta
+                if !sub.is_empty() && sub != "clear" {
+                    let instruction = parts[1..].join(" ");
+                    let plan_prompt = format!(
+                        "PLAN PROJEKTU — użyj tools plan_set/plan_add_step/plan_add_note żeby zaplanować:\n\n{instruction}\n\n\
+                         Zasady:\n\
+                         1. Najpierw plan_set(goal) z głównym celem.\n\
+                         2. Potem plan_add_step dla każdego kroku (3-7 kroków, nie za dużo).\n\
+                         3. plan_add_note dla ważnych decyzji architektonicznych.\n\
+                         4. Plan ma być reużywalny w przyszłych sesjach — nie loguj konkretów, tylko strukturę zadania.\n\
+                         5. Po zapisaniu planu, krótko podsumuj co zaplanowałeś."
+                    );
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("📋 /plan — delegacja planowania do agenta...").to_string(),
+                    });
+                    self.start_agent_stream(plan_prompt);
+                    return Ok(());
+                }
             }
             "/skill-learn" => {
                 // Refleksja: każe agentowi przemyśleć sesję i utworzyć learned skill z doświadczenia.
@@ -2401,6 +2486,9 @@ impl App {
 • /mcp [install <pkg>] - MCP serwery\n\
 • /update - Sprawdź aktualizacje GitHub\n\
 • /review - Inteligentny audyt bezpieczeństwa i jakości kodu\n\
+• /palace - Pełny drzewiasty podgląd stanu pamięci (Letta-style: blocks + skills)\n\
+• /plan - Podgląd/pisanie planu projektu (.opencode/plan.md, persistentny)\n\
+• /doctor - Audyt jakości pamięci (duplikaty, sekrety, rozmiar)\n\
 • /undo - Bezpieczne cofanie ostatnich zmian w repozytorium\n\
 • /search <zapytanie> - Wyszukiwarka dokumentacji w internecie\n\
 • /mcp - Podgląd zarejestrowanych serwerów Model Context Protocol\n\
@@ -2428,8 +2516,14 @@ impl App {
             AppEvent::Token(tok) => {
                 self.streaming_buffer.push_str(&tok);
             }
+            AppEvent::ContextUpdate(chars, tokens) => {
+                self.real_context_chars = chars;
+                self.real_context_tokens = tokens;
+            }
             AppEvent::StreamFinished(_used_model) => {
                 self.is_streaming = false;
+                self.real_context_chars = 0; // reset po zakończeniu streamingu
+                self.real_context_tokens = 0;
                 if !self.streaming_buffer.is_empty() {
                     self.messages.push(ChatMessage {
                         role: "assistant".to_string(),

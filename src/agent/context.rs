@@ -307,6 +307,7 @@ impl ContextManager {
         let skills_ctx = self.load_skills_context();
         let memories_ctx = self.load_memories_context();
         let memory_blocks = crate::memory::MemoryBlocks::new(self.work_dir.clone()).inject_into_prompt();
+        let project_plan = crate::memory::ProjectPlan::load(&self.work_dir).to_prompt_section();
         let mode_instructions = match mode {
             "architect" => "TRYB ARCHITEKTA: Skup się na planowaniu, projektowaniu architektury, modularności i analizie zależności. Przygotuj plan działania przed wprowadzaniem zmian.",
             "ask" => "TRYB PYTANIA (Read-only): Odpowiadaj na pytania i wyjaśniaj kod. Nie proponuj modyfikacji plików dopóki użytkownik o to wprost nie poprosi.",
@@ -341,6 +342,9 @@ MEMORIES (Windsurf/Trae):
 MEMORY BLOCKS (Letta-style, edytowalne — ucz się między sesjami):
 {memory_blocks}
 
+PLAN PROJEKTU (persistentny, per-projekt — `.opencode/plan.md`):
+{project_plan}
+
 SERWERY MODEL CONTEXT PROTOCOL (MCP):
 {mcp_report}
 
@@ -356,6 +360,14 @@ TWOJE MOŻLIWOŚCI I NARZĘDZIA:
    - `core_memory_replace(label, old_str, new_str)` – podmień fragment bloku,
    - `create_skill(name, content)` – utwórz learned skill z doświadczenia (zapis do .opencode/skills/learned/<name>/SKILL.md).
    Używaj ich gdy odkryjesz wzorzec/preferencję/wiedzę o projekcie, którą przyszła sesja powinna znać. Generalizuj, nie loguj pojedynczych zdarzeń. Skille tworzy po skończeniu złożonego zadania (np. procedura DB migration w tym projekcie).
+2b. Plan projektu (persistentny, per-projekt — `.opencode/plan.md`):
+   - `plan_set(goal)` – ustaw główny cel planu (nadpisuje poprzedni),
+   - `plan_add_step(description)` – dodaj krok na końcu listy,
+   - `plan_complete_step(step_number)` – oznacz krok (1-based) jako ukończony lub cofnij,
+   - `plan_update_step(step_number, description)` – zaktualizuj opis kroku,
+   - `plan_add_note(note)` – dodaj notatkę/decyzję do planu,
+   - `plan_clear()` – wyczyść cały plan.
+   Używaj planu gdy zadanie jest złożone (wiele kroków, sesji, modeli). Plan przetrwa zamknięcie UI — każda przyszła sesja (i każdy model) go zobaczy. Aktualizuj plan po ukończeniu kroku.
 3. Gdy chcesz użyć narzędzia, wygeneruj blok:
 <tool_call>
 {{"name": "nazwa_narzędzia", "arguments": {{"parametr": "wartość"}}}}

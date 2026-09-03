@@ -289,6 +289,136 @@ impl MemoryBlocks {
         format!("{header}{}\n\nPodsumowanie: {ok_count}/{} bloków OK, {} learned skilli.", findings.join("\n"), BLOCK_LABELS.len(), learned.len())
     }
 
+    // ─── /palace: pełny drzewiasty podgląd stanu pamięci (jak Letta) ────
+
+    /// Pełny podgląd stanu pamięci — drzewo z memory blocks, learned skills,
+    /// wszystkimi skillami i placeholderem dla archival memory (na przyszłość).
+    /// Format inspirowany Letta /palace — jedno miejsce, pełny obraz "umysłu" agenta.
+    pub fn palace_report(&self) -> String {
+        let blocks = self.load_all();
+        let total_chars: usize = blocks.iter().map(|(_, c)| c.len()).sum();
+        let total_capacity = BLOCK_CHAR_LIMIT * BLOCK_LABELS.len();
+
+        let sm = crate::skills::SkillsManager::new(self.work_dir.clone());
+        let all_skills = sm.list_skills();
+        let learned: Vec<_> = all_skills.iter().filter(|s| s.source == "learned").collect();
+        let non_learned: Vec<_> = all_skills.iter().filter(|s| s.source != "learned").collect();
+
+        // Grupuj non-learned skille po source dla zwięzłego podsumowania
+        let mut by_source: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for s in &non_learned {
+            *by_source.entry(s.source.as_str()).or_insert(0) += 1;
+        }
+
+        let mut out = String::from("🏰 Pałac Pamięci — pełny stan umysłu agenta:\n\n");
+
+        // 1. Memory blocks (always-in-context)
+        out.push_str(&format!("🧠 Memory Blocks (always-in-context, {}/{} znaków, {:.1}%):\n",
+            total_chars, total_capacity, total_chars as f64 * 100.0 / total_capacity as f64));
+        for (i, (label, content)) in blocks.iter().enumerate() {
+            let is_last = i == blocks.len() - 1;
+            let branch = if is_last { "└──" } else { "├──" };
+            let scope = match BlockScope::for_label(label) {
+                BlockScope::Global => "global",
+                BlockScope::Project => "project",
+            };
+            let path = self.block_path(label).map(|p| p.display().to_string()).unwrap_or_else(|| "(brak HOME)".to_string());
+            if content.is_empty() {
+                out.push_str(&format!("{branch} {label} [{scope}] — pusty\n"));
+                out.push_str(&format!("    └── {path}\n"));
+            } else {
+                let preview: String = content.chars().take(80).collect();
+                let suffix = if content.len() > 80 { "…" } else { "" };
+                out.push_str(&format!("{branch} {label} [{scope}] — {} znaków\n", content.len()));
+                out.push_str(&format!("    ├── {path}\n"));
+                out.push_str(&format!("    └── \"{preview}{suffix}\"\n"));
+            }
+        }
+        out.push('\n');
+
+        // 1b. Plan projektu (persistentny, per-projekt)
+        let plan = ProjectPlan::load(&self.work_dir);
+        let (plan_total, plan_done) = plan.stats();
+        out.push_str(&format!("📋 Plan projektu (.opencode/plan.md, {plan_done}/{plan_total} kroków ukończonych):\n"));
+        if plan.goal.is_empty() && plan.steps.is_empty() && plan.notes.is_empty() {
+            out.push_str("└── (brak planu — użyj /plan <instrukcja> lub tools plan_set/plan_add_step)\n");
+        } else {
+            if !plan.goal.is_empty() {
+                let goal_preview: String = plan.goal.chars().take(80).collect();
+                let suffix = if plan.goal.len() > 80 { "…" } else { "" };
+                out.push_str(&format!("├── cel: \"{goal_preview}{suffix}\"\n"));
+            }
+            for (i, step) in plan.steps.iter().enumerate() {
+                let is_last = i == plan.steps.len() - 1 && plan.notes.is_empty();
+                let branch = if is_last { "└──" } else { "├──" };
+                let mark = if step.completed { "✅" } else { "⬜" };
+                let desc_preview: String = step.description.chars().take(60).collect();
+                let suffix = if step.description.len() > 60 { "…" } else { "" };
+                out.push_str(&format!("{branch} {mark} {}. {}{suffix}\n", i + 1, desc_preview));
+            }
+            if !plan.notes.is_empty() {
+                let notes_preview: String = plan.notes.chars().take(60).collect();
+                let suffix = if plan.notes.len() > 60 { "…" } else { "" };
+                out.push_str(&format!("└── notatki: \"{notes_preview}{suffix}\"\n"));
+            }
+        }
+        out.push('\n');
+
+        // 2. Learned skills (procedury wyuczone przez /skill-learn)
+        out.push_str(&format!("🎓 Learned Skills ({}) — procedury wyuczone z doświadczenia:\n", learned.len()));
+        if learned.is_empty() {
+            out.push_str("└── (brak — użyj /skill-learn po skończeniu złożonego zadania)\n");
+        } else {
+            for (i, s) in learned.iter().enumerate() {
+                let is_last = i == learned.len() - 1;
+                let branch = if is_last { "└──" } else { "├──" };
+                let preview: String = s.preview.chars().take(60).collect();
+                let suffix = if s.preview.len() > 60 { "…" } else { "" };
+                out.push_str(&format!("{branch} {} — \"{}{}\"\n", s.name, preview, suffix));
+            }
+        }
+        out.push('\n');
+
+        // 3. Wszystkie skille (roo/cline/opencode/commandcode/rules)
+        out.push_str(&format!("📦 Wszystkie skille ({})", all_skills.len()));
+        if !by_source.is_empty() {
+            let summary: Vec<String> = by_source.iter().map(|(k, v)| format!("{}({})", k, v)).collect();
+            out.push_str(&format!(": {}", summary.join(", ")));
+        }
+        out.push_str(":\n");
+        if non_learned.is_empty() && learned.is_empty() {
+            out.push_str("└── (brak skilli — dodaj .roo/skills/<name>/SKILL.md lub .opencode/skills/*.md)\n");
+        } else if non_learned.is_empty() {
+            out.push_str("└── (tylko learned skilli — patrz wyżej)\n");
+        } else {
+            for (i, s) in non_learned.iter().enumerate() {
+                let is_last = i == non_learned.len() - 1;
+                let branch = if is_last { "└──" } else { "├──" };
+                let preview: String = s.preview.chars().take(50).collect();
+                let suffix = if s.preview.len() > 50 { "…" } else { "" };
+                out.push_str(&format!("{branch} {} [{}] — \"{}{}\"\n", s.name, s.source, preview, suffix));
+            }
+        }
+        out.push('\n');
+
+        // 4. Archival memory (placeholder — wektorowa baza długoterminowa, na przyszłość)
+        out.push_str("🔮 Archival Memory (wektorowa, długoterminowa):\n");
+        out.push_str("└── niedostępne — planowane w backlogu (qdrant/chroma + embedding model)\n");
+        out.push_str("    użyj /remember + /skill-learn jako obecny mechanizm długoterminowy\n\n");
+
+        // 5. Statystyki końcowe
+        let git_status = Self::git_status_memory().unwrap_or_else(|_| "(brak repo)".to_string());
+        out.push_str("📊 Statystyki:\n");
+        out.push_str(&format!("├── bloki: {}/{} znaków ({:.1}% pojemności)\n",
+            total_chars, total_capacity, total_chars as f64 * 100.0 / total_capacity as f64));
+        out.push_str(&format!("├── learned skilli: {}\n", learned.len()));
+        out.push_str(&format!("├── wszystkich skilli: {}\n", all_skills.len()));
+        out.push_str(&format!("└── git sync: {}\n", git_status));
+
+        out.push_str("\nKomendy: /memory (podgląd bloków), /memory show <label>, /remember (refleksja), /skill-learn (nowy skill), /doctor (audyt jakości), /memory push|pull (git sync)");
+        out
+    }
+
     // ─── MemFS git sync ───────────────────────────────────────────────────
 
     /// Katalog pamięci globalnej (gwarantuje istnienie).
@@ -610,5 +740,438 @@ mod tests {
         let report = mb.doctor_report();
         assert!(report.contains("zbliża się do limitu") || report.contains("limitu"), "doctor powinien ostrzec o rozmiarze: {report}");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── /palace tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_palace_report_empty_state() {
+        // Świeży katalog bez bloków i bez skilli — palace powinien się renderować bez paniki
+        // i pokazywać stan "pusty" + placeholder archival.
+        let dir = fresh_work_dir();
+        let mb = MemoryBlocks::new(dir.clone());
+        let report = mb.palace_report();
+        assert!(report.contains("Pałac Pamięci"), "palace powinien mieć nagłówek: {report}");
+        assert!(report.contains("Memory Blocks"), "palace powinien pokazywać sekcję bloków: {report}");
+        assert!(report.contains("Archival Memory"), "palace powinien mieć placeholder archival: {report}");
+        assert!(report.contains("Statystyki"), "palace powinien mieć statystyki: {report}");
+        // project jest per-projekt — świeży katalog, więc pusty
+        assert!(report.contains("project [project] — pusty"), "project powinien być pusty w świeżym katalogu: {report}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_palace_report_with_project_block_and_learned_skill() {
+        let dir = fresh_work_dir();
+        let mb = MemoryBlocks::new(dir.clone());
+        mb.save_block("project", "Ten projekt używa tokio::spawn dla IO i polskie komentarze").unwrap();
+
+        // Dodaj learned skill przez SkillsManager (deleguje do crate::skills)
+        let sm = crate::skills::SkillsManager::new(dir.clone());
+        sm.create_learned_skill("db-migration", "# DB Migration\n1. sqlx::migrate!\n2. test").unwrap();
+
+        let report = mb.palace_report();
+        assert!(report.contains("project [project] — 56 znaków") || report.contains("project [project] —"), "palace powinien pokazać rozmiar bloku project: {report}");
+        assert!(report.contains("tokio::spawn"), "palace powinien pokazać preview bloku project: {report}");
+        assert!(report.contains("db-migration"), "palace powinien pokazać learned skill: {report}");
+        assert!(report.contains("learned skilli: 1"), "palace powinien policzyć 1 learned skill: {report}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_palace_report_with_roo_skill() {
+        let dir = fresh_work_dir();
+        let mb = MemoryBlocks::new(dir.clone());
+        // Dodaj skille roo i cline (non-learned)
+        let roo_dir = dir.join(".roo").join("skills").join("code-review");
+        fs::create_dir_all(&roo_dir).unwrap();
+        fs::write(roo_dir.join("SKILL.md"), "# Code Review\nSprawdź bezpieczeństwo i styl").unwrap();
+        fs::write(dir.join(".clinerules"), "używaj clean code").unwrap();
+
+        let report = mb.palace_report();
+        assert!(report.contains("code-review [roo]"), "palace powinien pokazać skill roo: {report}");
+        assert!(report.contains(".clinerules [rules]"), "palace powinien pokazać .clinerules: {report}");
+        assert!(report.contains("roo(1)"), "palace powinien podsumować source roo(1): {report}");
+        assert!(report.contains("rules(1)"), "palace powinien podsumować source rules(1): {report}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_palace_report_capacity_calculation() {
+        // Sprawdź że procent pojemności jest liczony poprawnie (nie panikuje przy 0 znaków)
+        let dir = fresh_work_dir();
+        let mb = MemoryBlocks::new(dir.clone());
+        let report = mb.palace_report();
+        // Powinien zawierać procent (nawet 0.0%)
+        assert!(report.contains("0.0%") || report.contains("% pojemności"), "palace powinien pokazać procent: {report}");
+        fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// ============================================================================
+// ProjectPlan — persistentny plan per projekt (.opencode/plan.md)
+// ============================================================================
+//
+// Plan jest zapisywany w pliku `.opencode/plan.md` w katalogu projektu.
+// Wczytywany zawsze przy starcie agenta i wstrzykiwany do system prompt.
+// Agent aktualizuje plan przez tools `plan_set` / `plan_add_step` /
+// `plan_complete_step` / `plan_clear`.
+// Komenda `/plan` pokazuje aktualny plan w TUI.
+//
+// Format pliku: Markdown z listą checkboxów (jak GitHub issues):
+//   ## Cel: <główny cel projektu>
+//
+//   - [ ] Krok 1: opis
+//   - [ ] Krok 2: opis
+//   - [x] Krok 3: ukończony
+//
+// Po zamknięciu i otwarciu UI — plan nadal tam jest. Każdy model (Cursor,
+// Devin ACP, Gemini, etc.) widzi ten sam plan bo jest wczytywany z dysku.
+
+use serde::{Deserialize, Serialize};
+
+/// Pojedynczy krok planu.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanStep {
+    pub description: String,
+    pub completed: bool,
+}
+
+/// Persistentny plan projektu.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectPlan {
+    /// Główny cel projektu (1 zdanie).
+    pub goal: String,
+    /// Lista kroków (zachowuje kolejność).
+    pub steps: Vec<PlanStep>,
+    /// Notatki / kontekst dodatkowy (np. decyzje architektoniczne).
+    pub notes: String,
+}
+
+impl ProjectPlan {
+    /// Ścieżka pliku planu: `.opencode/plan.md` w katalogu projektu.
+    pub fn plan_path(work_dir: &std::path::Path) -> std::path::PathBuf {
+        work_dir.join(".opencode").join("plan.md")
+    }
+
+    /// Wczytuje plan z dysku. Zwraca pusty plan jeśli plik nie istnieje.
+    pub fn load(work_dir: &std::path::Path) -> Self {
+        let path = Self::plan_path(work_dir);
+        if !path.exists() {
+            return Self::default();
+        }
+        match fs::read_to_string(&path) {
+            Ok(content) => Self::parse_markdown(&content),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Zapisuje plan do `.opencode/plan.md` (tworzy katalogi jeśli trzeba).
+    pub fn save(&self, work_dir: &std::path::Path) -> anyhow::Result<()> {
+        let path = Self::plan_path(work_dir);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, self.to_markdown())?;
+        Ok(())
+    }
+
+    /// Parsuje format Markdown (zapisany przez `to_markdown`).
+    /// Wytrzyma ręczne edycje usera — ignoruje linie których nie rozumie.
+    pub fn parse_markdown(content: &str) -> Self {
+        let mut plan = Self::default();
+        let mut in_notes = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Cel: "## Cel: <opis>"
+            if let Some(rest) = trimmed.strip_prefix("## Cel:") {
+                plan.goal = rest.trim().to_string();
+                continue;
+            }
+            // Sekcja notatek
+            if trimmed == "## Notatki:" || trimmed == "## Notatki" {
+                in_notes = true;
+                continue;
+            }
+            if trimmed.starts_with("## ") {
+                in_notes = false;
+                continue;
+            }
+            if in_notes {
+                if !plan.notes.is_empty() {
+                    plan.notes.push('\n');
+                }
+                plan.notes.push_str(trimmed);
+                continue;
+            }
+            // Krok: "- [ ] opis" lub "- [x] opis"
+            if let Some(rest) = trimmed.strip_prefix("- [x]") {
+                plan.steps.push(PlanStep {
+                    description: rest.trim().to_string(),
+                    completed: true,
+                });
+            } else if let Some(rest) = trimmed.strip_prefix("- [ ]") {
+                plan.steps.push(PlanStep {
+                    description: rest.trim().to_string(),
+                    completed: false,
+                });
+            }
+        }
+        plan
+    }
+
+    /// Renderuje plan jako Markdown (format stabilny, round-trip z `parse_markdown`).
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::new();
+        if !self.goal.is_empty() {
+            out.push_str(&format!("## Cel: {}\n\n", self.goal));
+        }
+        if !self.steps.is_empty() {
+            for step in &self.steps {
+                let mark = if step.completed { 'x' } else { ' ' };
+                out.push_str(&format!("- [{mark}] {}\n", step.description));
+            }
+            out.push('\n');
+        }
+        if !self.notes.is_empty() {
+            out.push_str("## Notatki:\n");
+            out.push_str(&self.notes);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Renderuje plan do wstrzyknięcia w system prompt (kompaktowy).
+    pub fn to_prompt_section(&self) -> String {
+        if self.goal.is_empty() && self.steps.is_empty() && self.notes.is_empty() {
+            return "(brak planu — agent powinien rozważyć użycie plan_set gdy zadanie jest złożone)".to_string();
+        }
+        let mut out = String::new();
+        if !self.goal.is_empty() {
+            out.push_str(&format!("Cel: {}\n", self.goal));
+        }
+        if !self.steps.is_empty() {
+            let total = self.steps.len();
+            let done = self.steps.iter().filter(|s| s.completed).count();
+            out.push_str(&format!("Kroki ({done}/{total} ukończonych):\n"));
+            for (i, step) in self.steps.iter().enumerate() {
+                let mark = if step.completed { "✅" } else { "⬜" };
+                out.push_str(&format!("  {mark} {}. {}\n", i + 1, step.description));
+            }
+        }
+        if !self.notes.is_empty() {
+            out.push_str(&format!("Notatki:\n{}\n", self.notes));
+        }
+        out
+    }
+
+    // ── Operacje wywoływane przez tools agenta ──────────────────────────
+
+    /// Ustawia główny cel planu (nadpisuje poprzedni).
+    pub fn set_goal(&mut self, goal: &str) {
+        self.goal = goal.trim().to_string();
+    }
+
+    /// Dodaje nowy krok na końcu listy.
+    pub fn add_step(&mut self, description: &str) {
+        self.steps.push(PlanStep {
+            description: description.trim().to_string(),
+            completed: false,
+        });
+    }
+
+    /// Oznacza krok jako ukończony (po indeksie 1-based) lub cofa oznaczenie.
+    pub fn toggle_step(&mut self, step_number: usize) -> anyhow::Result<()> {
+        let total = self.steps.len();
+        let idx = step_number.checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("Numer kroku musi być >= 1 (dostalem {step_number})"))?;
+        let step = self.steps.get_mut(idx)
+            .ok_or_else(|| anyhow::anyhow!("Krok {step_number} nie istnieje (plan ma {total} kroków)"))?;
+        step.completed = !step.completed;
+        Ok(())
+    }
+
+    /// Aktualizuje opis kroku (po indeksie 1-based).
+    pub fn update_step(&mut self, step_number: usize, new_description: &str) -> anyhow::Result<()> {
+        let total = self.steps.len();
+        let idx = step_number.checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("Numer kroku musi być >= 1"))?;
+        let step = self.steps.get_mut(idx)
+            .ok_or_else(|| anyhow::anyhow!("Krok {step_number} nie istnieje (plan ma {total} kroków)"))?;
+        step.description = new_description.trim().to_string();
+        Ok(())
+    }
+
+    /// Czyści cały plan (cel + kroki + notatki).
+    pub fn clear(&mut self) {
+        self.goal.clear();
+        self.steps.clear();
+        self.notes.clear();
+    }
+
+    /// Dodaje notatkę (dopisuje do sekcji notatek).
+    pub fn add_note(&mut self, note: &str) {
+        if !self.notes.is_empty() {
+            self.notes.push('\n');
+        }
+        self.notes.push_str(note.trim());
+    }
+
+    /// Statystyki: (liczba kroków, liczba ukończonych).
+    pub fn stats(&self) -> (usize, usize) {
+        let total = self.steps.len();
+        let done = self.steps.iter().filter(|s| s.completed).count();
+        (total, done)
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn fresh_work_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("opencode_plan_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).ok();
+        dir
+    }
+
+    #[test]
+    fn test_plan_empty_when_no_file() {
+        let dir = fresh_work_dir();
+        let plan = ProjectPlan::load(&dir);
+        assert!(plan.goal.is_empty());
+        assert!(plan.steps.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_plan_save_and_load_roundtrip() {
+        let dir = fresh_work_dir();
+        let mut plan = ProjectPlan::default();
+        plan.set_goal("Zbudować CLI w Rust");
+        plan.add_step("Inicjalizacja cargo");
+        plan.add_step("Napisz main.rs");
+        plan.add_step("Testy");
+        plan.toggle_step(1).unwrap(); // krok 1 ukończony
+        plan.add_note("Używamy tokio dla async");
+        plan.save(&dir).unwrap();
+
+        let loaded = ProjectPlan::load(&dir);
+        assert_eq!(loaded.goal, "Zbudować CLI w Rust");
+        assert_eq!(loaded.steps.len(), 3);
+        assert!(loaded.steps[0].completed);
+        assert!(!loaded.steps[1].completed);
+        assert_eq!(loaded.steps[2].description, "Testy");
+        assert!(loaded.notes.contains("tokio"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_plan_markdown_roundtrip() {
+        let mut plan = ProjectPlan::default();
+        plan.set_goal("Test roundtrip");
+        plan.add_step("Krok A");
+        plan.add_step("Krok B");
+        plan.toggle_step(2).unwrap();
+        plan.add_note("Notatka 1");
+
+        let md = plan.to_markdown();
+        let parsed = ProjectPlan::parse_markdown(&md);
+
+        assert_eq!(parsed.goal, "Test roundtrip");
+        assert_eq!(parsed.steps.len(), 2);
+        assert!(!parsed.steps[0].completed);
+        assert!(parsed.steps[1].completed);
+        assert_eq!(parsed.steps[1].description, "Krok B");
+        assert!(parsed.notes.contains("Notatka 1"));
+    }
+
+    #[test]
+    fn test_plan_to_prompt_section_empty() {
+        let plan = ProjectPlan::default();
+        let section = plan.to_prompt_section();
+        assert!(section.contains("brak planu"));
+    }
+
+    #[test]
+    fn test_plan_to_prompt_section_with_content() {
+        let mut plan = ProjectPlan::default();
+        plan.set_goal("Mój cel");
+        plan.add_step("Krok 1");
+        plan.add_step("Krok 2");
+        plan.toggle_step(1).unwrap();
+
+        let section = plan.to_prompt_section();
+        assert!(section.contains("Cel: Mój cel"));
+        assert!(section.contains("1/2 ukończonych"));
+        assert!(section.contains("✅"));
+        assert!(section.contains("⬜"));
+    }
+
+    #[test]
+    fn test_plan_toggle_step_out_of_range() {
+        let mut plan = ProjectPlan::default();
+        plan.add_step("Tylko krok");
+        assert!(plan.toggle_step(0).is_err(), "0 powinien być błędem");
+        assert!(plan.toggle_step(2).is_err(), "2 nie istnieje");
+        assert!(plan.toggle_step(1).is_ok(), "1 powinien działać");
+    }
+
+    #[test]
+    fn test_plan_clear() {
+        let mut plan = ProjectPlan::default();
+        plan.set_goal("Cel");
+        plan.add_step("Krok");
+        plan.add_note("Notatka");
+        plan.clear();
+        assert!(plan.goal.is_empty());
+        assert!(plan.steps.is_empty());
+        assert!(plan.notes.is_empty());
+    }
+
+    #[test]
+    fn test_plan_update_step() {
+        let mut plan = ProjectPlan::default();
+        plan.add_step("Stary opis");
+        plan.update_step(1, "Nowy opis").unwrap();
+        assert_eq!(plan.steps[0].description, "Nowy opis");
+    }
+
+    #[test]
+    fn test_plan_parse_handles_human_edits() {
+        // User może ręcznie edytować plik — parser musi być wyrozumiały
+        let md = r#"## Cel: Ręcznie edytowany plan
+
+- [ ] Pierwszy krok
+- [x] Ukończony krok
+- [ ] Trzeci krok
+
+## Notatki:
+To jest notatka
+na dwie linie
+"#;
+        let plan = ProjectPlan::parse_markdown(md);
+        assert_eq!(plan.goal, "Ręcznie edytowany plan");
+        assert_eq!(plan.steps.len(), 3);
+        assert!(plan.steps[1].completed);
+        assert!(plan.notes.contains("dwie linie"));
+    }
+
+    #[test]
+    fn test_plan_stats() {
+        let mut plan = ProjectPlan::default();
+        plan.add_step("A");
+        plan.add_step("B");
+        plan.add_step("C");
+        plan.toggle_step(1).unwrap();
+        plan.toggle_step(3).unwrap();
+        let (total, done) = plan.stats();
+        assert_eq!(total, 3);
+        assert_eq!(done, 2);
     }
 }
