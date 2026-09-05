@@ -368,6 +368,11 @@ TWOJE MOŻLIWOŚCI I NARZĘDZIA:
    - `plan_add_note(note)` – dodaj notatkę/decyzję do planu,
    - `plan_clear()` – wyczyść cały plan.
    Używaj planu gdy zadanie jest złożone (wiele kroków, sesji, modeli). Plan przetrwa zamknięcie UI — każda przyszła sesja (i każdy model) go zobaczy. Aktualizuj plan po ukończeniu kroku.
+2c. Archival memory (wektorowa pamięć długoterminowa, HNSW):
+   - `archival_search(query, top_k=5)` – wyszukaj podobną wiedzę (vector + keyword),
+   - `archival_add(content, labels=[], node_type="fact")` – zapisz długoterminową wiedzę,
+   - `archival_list()` – wylistuj wszystkie wpisy.
+   Używaj archival memory dla faktów/wzorców które nie pasują do bloków memory (np. "ten projekt używa PostgreSQL 16 z schematem multi-tenant", "auth via Keycloak realm X"). Wpisów nie widać w system prompcie — wyszukuj on-demand.
 3. Gdy chcesz użyć narzędzia, wygeneruj blok:
 <tool_call>
 {{"name": "nazwa_narzędzia", "arguments": {{"parametr": "wartość"}}}}

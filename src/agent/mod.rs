@@ -337,6 +337,70 @@ impl Agent {
                 plan.save(&self.work_dir)?;
                 Ok("✅ Wyczyszczono cały plan (.opencode/plan.md).".to_string())
             }
+            // ── Archival memory (wektorowa pamięć długoterminowa) ──────────
+            "archival_search" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or_default();
+                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                if query.is_empty() {
+                    return Err(anyhow::anyhow!("archival_search wymaga 'query' (tekst do wyszukania)"));
+                }
+                let am = crate::archival::ArchivalMemory::open(&self.work_dir)?;
+                let hits = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(am.search(query, top_k))
+                })?;
+                if hits.is_empty() {
+                    return Ok("Brak wyników w archival memory.".to_string());
+                }
+                let mut result = format!("Archival memory — {} wyników dla '{query}':\n\n", hits.len());
+                for (i, h) in hits.iter().enumerate() {
+                    result.push_str(&format!(
+                        "### {} [score={:.3}] id={}\nlabels: {}\n{}\n\n---\n\n",
+                        i + 1, h.score, h.id, h.labels.join(", "), h.content
+                    ));
+                }
+                Ok(result)
+            }
+            "archival_add" => {
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+                let labels = args.get("labels")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let node_type = args.get("node_type").and_then(|v| v.as_str()).unwrap_or("fact");
+                if content.is_empty() {
+                    return Err(anyhow::anyhow!("archival_add wymaga 'content' (wiedza do zapisania)"));
+                }
+                let am = crate::archival::ArchivalMemory::open(&self.work_dir)?;
+                let id = format!("arch_{}", uuid::Uuid::new_v4().simple());
+                let entry = crate::archival::ArchivalEntry {
+                    id: id.clone(),
+                    content: content.to_string(),
+                    labels,
+                    node_type: node_type.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    source: "agent".to_string(),
+                };
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(am.add(&entry))
+                })?;
+                let count = am.count();
+                Ok(format!("✅ Zapisano w archival memory (id={id}). W bazie: {count} wpisów."))
+            }
+            "archival_list" => {
+                let am = crate::archival::ArchivalMemory::open(&self.work_dir)?;
+                let list = am.list()?;
+                if list.is_empty() {
+                    return Ok("Archival memory jest pusta.".to_string());
+                }
+                let mut result = format!("Archival memory — {} wpisów:\n\n", list.len());
+                for e in &list {
+                    result.push_str(&format!(
+                        "• [{}] {} (labels: {})\n  {}\n\n",
+                        e.id, e.node_type, e.labels.join(", "), e.content.chars().take(100).collect::<String>()
+                    ));
+                }
+                Ok(result)
+            }
             _ => {
                 // Sprawdź fallback do narzędzia MCP jeśli przekazano pole "server"
                 if let Some(server) = args.get("server").and_then(|s| s.as_str()) {

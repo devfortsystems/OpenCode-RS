@@ -5,12 +5,16 @@
 ```bash
 cargo check                  # ~17s — szybki check
 cargo build                  # pełny build, zero ostrzeżeń
-cargo test                   # 85 testów, ~30s
+cargo test                   # 164 testów, ~80s
 cargo test memory::          # tylko memory (19 testów, w tym /palace)
 cargo test skills::          # tylko skills (5 testów)
-cargo test providers::       # tylko providers (cli_subprocess + devin_cloud)
+cargo test providers::       # tylko providers (cli_subprocess + devin_cloud + antigravity)
 cargo test cost::            # tylko cost + TokenEstimator (6 testów)
 cargo test tools::           # tylko ToolEngine metadata (4 testy)
+cargo test app::             # tylko app.rs (11 testów: model tabs, filtered_models, App::new)
+cargo test importer::        # tylko importer.rs (14 testów: strip_json_comments, apply_env_key)
+cargo test file_manager::    # tylko file_manager.rs (21 testów: file_color, PaneState, navigation)
+cargo test database::        # tylko DevFortDB embedded (12 testów: JSON, TTL, scan, increment, sessions)
 cargo build --release        # release binary
 ```
 
@@ -19,6 +23,9 @@ Platforma: Windows + PowerShell (uwaga: `&&` nie działa, używaj `;`).
 ## Architektura (krótko)
 
 - `src/providers/` — `ProviderRouter` + `BridgeProvider` (HTTP proxy do vscode.lm edytorów) + `DirectApiProvider` (OpenAI-compat) + `SubprocessProvider` (commandcode-cli) + `CliSubprocessProvider` (Devin/Claude Code/Aider/Gemini/Codex CLI) + `DevinCloudProvider` (api.devin.ai v3, sesje w chmurze) + `AcpClientProvider` (Agent Client Protocol, JSON-RPC over stdio z `devin acp` / `gemini --acp` / `claude-code-acp` / `codex-acp` / `opencode acp`)
+- `src/acp_server.rs` — **ACP server** (odwrotna rola: opencode-rs jako agent sterowany przez edytory Zed/Windsurf przez `opencode --acp`, stdio JSON-RPC, streaming przez `session/update` notifications)
+- `src/database.rs` — **DevFortDB embedded** (wbudowana baza MDBX: sesje, memory blocks, plan, cache z TTL, stats — namespace izolacja, JSON API, 256 MiB, ACID)
+- `vendor/signet-mdbx-sys/` — vendored MDBX sys bindings (Windows fix — puste bindings_windows.rs w upstream)
 - `src/agent/` — `Agent` (ReAct loop), `ContextManager` (system prompt), `ToolEngine` (read/edit/write/bash/grep — z metadanymi rozmiaru/tokenów), `McpManager`, `CheckpointManager`
 - `src/app.rs` (120KB) — TUI, komendy slash, event loop, `AppEvent::ContextUpdate(chars, tokens)` — realny tracking contextu
 - `src/memory.rs` — Letta-style memory blocks (persona/human/project) + `ProjectPlan` (persistentny plan per-projekt `.opencode/plan.md`) + `/palace` (drzewiasty podgląd: blocks + plan + skills) + `/doctor` (audyt)
@@ -106,33 +113,19 @@ Plan i memory blocks są wstrzykiwane w prompt delegatów (Devin ACP/Cloud) prze
 - [x] Bug fix: Windows .cmd shims wymagają cmd /c w CliSubprocessProvider
 - [x] Estymacja tokenów — TokenEstimator (BPE heurystyka kod vs tekst + file-size per-extension) + realny context tracking (AppEvent::ContextUpdate(chars, tokens)) + metadane w tool results (read_file/edit_file/write_file)
 - [x] Nowy operator bridge — Gemini CLI, Claude Code, Codex przez ACP (nie wymaga wtyczki)
+- [x] Antigravity IDE reverse engineering — gRPC-Web protocol cracked, 32 models discovered, API documented in `ANTIGRAVITY_API.md`
+- [x] Antigravity provider — `src/providers/antigravity.rs` (gRPC-Web direct do language_server.exe, 32 modele: Gemini 3.x, Claude 4.6, GPT-OSS — wszystkie darmowe)
+- [x] `/sleeptime` dreaming — `opencode --sleeptime` (jednorazowo) lub `opencode --sleeptime 300` (cyklicznie co 5 min) — refleksja nad pamięcią + planem, log do `.opencode/sleeptime_log.md`
+- [x] Testy coverage — app.rs (11 testów), importer.rs (14 testów), file_manager.rs (21 testów) — łącznie 46 nowych testów
+- [x] ACP jako agent — `opencode --acp` (stdio JSON-RPC server, opencode-rs sterowany przez Zed/Windsurf)
+- [x] DevFortDB embedded — `src/database.rs` (wbudowana baza MDBX, ACID, TTL, JSON, HNSW — sesje/memory/plan/cache/stats w jednej bazie)
+- [x] Subkomendy CLI — `opencode run/acp/mcp/models/auth/doctor/session/stats/export/import/skills/rules/plugins/sleeptime/upgrade/version/completion` (łącząc opencode + devin + commandcode)
+- [x] Sesje w DevFortDB — `SessionManager` używa DB primary, JSON fallback + auto-migracja
+- [x] Archival memory (HNSW) — `src/archival.rs` (Grafowektor + hash/Ollama/OpenAI embedding, tools `archival_search`/`archival_add`/`archival_list`)
+- [x] `/context` — podgląd zużycia context window (rozkład tokenów: system prompt, memory, plan, skills, archival, historia)
 
 ### Do zrobienia
 
-### 1. Archival memory (wektorowa) — skoro 100MB RAM jest OK
-- Embedding DB: qdrant, chroma, lub litedb + sqlite-vss
-- Agent zapisuje długoterminową wiedzę (poza memory blocks)
-- Retrieval on-demand przez tool `archival_search(query)`
-- **Koszt:** średni-duży (nowa zależność, embedding model, indeksowanie)
-- **Uwaga:** wymaga embedding modelu (lokalny via ollama, albo API OpenAI)
-
-### 2. `/sleeptime` dreaming — refleksja w tle
-- Always-on proces który okresowo reflektuje nad pamięcią
-- Nie pasuje do TUI (wymaga daemon/server) — ale można zrobić jako `opencode-rs --sleeptime` subkomendę
-- **Koszt:** średni
-
-### 3. Push na origin
+### 1. Push na origin
 - Commity lokalne, nie pushowane
 - **Koszt:** tryvialny (ale wymaga zgody — nie pushować bez pytania)
-
-### 4. Więcej testów coverage
-- `app.rs` (120KB) — brak testów dla komend slash
-- `importer.rs` (26KB) — brak testów
-- `file_manager.rs` (17KB) — brak testów
-- `theme.rs` ma testy, ale `palette.rs` tylko 3
-- **Koszt:** średni
-
-### 5. ACP (Agent Client Protocol) — opcjonalnie
-- Był omówiony — ACP robi odwrotną rzecz niż bridge (edytor steruje agentem, nie agent korzysta z LLM edytora)
-- Sens tylko jeśli opencode-rs ma działać jako agent w Zed/Windsurf
-- **Koszt:** średni-duży (Rust SDK `agent-client-protocol`, stdio transport, implementacja trait Agent)

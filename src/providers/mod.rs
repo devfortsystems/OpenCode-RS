@@ -8,6 +8,7 @@ use tokio::sync::mpsc::Sender;
 use crate::config::AppConfig;
 
 pub mod acp;
+pub mod antigravity;
 pub mod bridge;
 pub mod cli_subprocess;
 pub mod devin_cloud;
@@ -15,6 +16,7 @@ pub mod direct;
 pub mod subprocess;
 
 use acp::AcpClientProvider;
+use antigravity::AntigravityProvider;
 use bridge::BridgeProvider;
 use cli_subprocess::{CliSpec, CliSubprocessProvider};
 use devin_cloud::DevinCloudProvider;
@@ -84,6 +86,10 @@ pub struct ProviderRouter {
     kilo_run: Arc<CliSubprocessProvider>,
     kilo_run_free: Arc<CliSubprocessProvider>,
     cline_cli: Arc<CliSubprocessProvider>,
+    // Antigravity IDE — bezpośrednie połączenie gRPC-Web z language_server.exe.
+    // 32 modele (Gemini 3.x, Claude 4.6, GPT-OSS) — wszystkie darmowe (free-tier).
+    // Lazy init: provider tworzony przy pierwszym użyciu (wymaga uruchomionego IDE).
+    antigravity: tokio::sync::OnceCell<Arc<AntigravityProvider>>,
 }
 
 impl ProviderRouter {
@@ -254,6 +260,7 @@ impl ProviderRouter {
             kilo_run,
             kilo_run_free,
             cline_cli,
+            antigravity: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -272,15 +279,28 @@ impl ProviderRouter {
             ("opencode-gemini-3-7-pro", "Gemini 3.7 Pro (OpenCode Native)", "opencode"),
             ("opencode-gemini-3-7-flash", "Gemini 3.7 Flash (OpenCode Native)", "opencode"),
 
-            // 🪐 Google Antigravity SDK & IDE
-            ("antigravity-gemini-3-7-flash", "Gemini 3.7 Flash Instant (Antigravity)", "antigravity"),
-            ("antigravity-gemini-3-7-pro", "Gemini 3.7 Pro 2M Context (Antigravity)", "antigravity"),
-            ("antigravity-gemini-3-7-flash-thinking", "Gemini 3.7 Flash Thinking (Antigravity)", "antigravity"),
-            ("antigravity-claude-3-7", "Claude 3.7 Sonnet Thinking (Antigravity)", "antigravity"),
-            ("antigravity-claude-3-5-sonnet", "Claude 3.5 Sonnet (Antigravity SDK)", "antigravity"),
-            ("antigravity-gemini-3-1-pro", "Gemini 3.1 Pro Preview (Antigravity)", "antigravity"),
-            ("antigravity-deepseek-r1", "DeepSeek R1 Reasoning (Antigravity)", "antigravity"),
-            ("antigravity-gpt-4o", "GPT-4o Omnimodal (Antigravity SDK)", "antigravity"),
+            // 🪐 Google Antigravity IDE — gRPC-Web direct (32 modele, free-tier)
+            // Wymaga uruchomionego Antigravity IDE. Modele wykrywane dynamicznie.
+            ("antigravity-gemini-3-1-pro-high", "Gemini 3.1 Pro High (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-1-pro-low", "Gemini 3.1 Pro Low (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-flash", "Gemini 3 Flash (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-flash-agent", "Gemini 3.5 Flash High Agent (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-1-flash-lite", "Gemini 3.1 Flash Lite (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-5-flash-low", "Gemini 3.5 Flash Low (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-6-flash-high", "Gemini 3.6 Flash High (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-6-flash-medium", "Gemini 3.6 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-6-flash-low", "Gemini 3.6 Flash Low (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-7-flash-high", "Gemini 3.7 Flash High (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-7-flash-medium", "Gemini 3.7 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-7-flash-low", "Gemini 3.7 Flash Low (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-8-flash-high", "Gemini 3.8 Flash High (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-8-flash-medium", "Gemini 3.8 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-3-8-flash-low", "Gemini 3.8 Flash Low (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-2-5-pro", "Gemini 2.5 Pro (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gemini-2-5-flash", "Gemini 3.1 Flash Lite (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-claude-sonnet-4-6", "Claude Sonnet 4.6 Thinking (Antigravity, DARMOWY)", "antigravity"),
+            ("antigravity-gpt-oss-120b-medium", "GPT-OSS 120B Medium (Antigravity, DARMOWY)", "antigravity"),
 
             // 🎯 Trae AI — realne modele z docs.trae.ai (Claude usunięty 11.2025, teraz Seed/Kimi/MiniMax/Gemini/GPT-5)
             // wildcard: każdy `trae-*` → Bridge (np. przyszły Seed-2.5 zadziała bez zmiany kodu)
@@ -462,6 +482,29 @@ impl ProviderRouter {
         messages: &[ChatMessage],
         token_tx: Sender<String>,
     ) -> Result<()> {
+        // ─── Antigravity IDE — gRPC-Web direct do language_server.exe ────
+        // 32 modele (Gemini 3.x, Claude 4.6, GPT-OSS), wszystkie darmowe.
+        // Lazy init: provider tworzony przy pierwszym użyciu.
+        if model.starts_with("antigravity-") {
+            let provider = self
+                .antigravity
+                .get_or_try_init(|| async {
+                    AntigravityProvider::discover().await.map(Arc::new)
+                })
+                .await
+                .map_err(|e: anyhow::Error| {
+                    anyhow!(
+                        "Antigravity IDE nie dostępne: {}.\n\
+                         Uruchom Antigravity IDE i spróbuj ponownie.",
+                        e
+                    )
+                })?;
+
+            // Wyciągnij model ID (bez prefixu "antigravity-")
+            let ag_model = model.strip_prefix("antigravity-").unwrap_or(model);
+            return provider.stream_chat(ag_model, messages, token_tx).await;
+        }
+
         // ─── Agenci-CLI jako subprocess (meta-agent delegation) ───────────
         // Każdy agent-CLI uruchamiany w trybie non-interactive (-p / --message).
         // Modele z sufiksem (np. "devin-cli-opus") przekazują model do CLI.
@@ -745,6 +788,31 @@ impl ProviderRouter {
             }
         }
 
+        // 6. Odpytaj Antigravity IDE (gRPC-Web, dynamiczne wykrywanie modeli)
+        // Antigravity musi być uruchomione. Modele są dodawane z prefixem "antigravity-".
+        if let Ok(ag) = AntigravityProvider::discover().await {
+            if let Ok(models) = ag.get_available_models().await {
+                for m in models {
+                    let id = format!("antigravity-{}", m.id);
+                    if seen_ids.insert(id.clone()) {
+                        let name = m.display_name.unwrap_or_else(|| m.id.clone());
+                        let provider = m.model_provider.as_deref().unwrap_or("antigravity");
+                        let provider_label = match provider {
+                            "MODEL_PROVIDER_GOOGLE" => "Google",
+                            "MODEL_PROVIDER_ANTHROPIC" => "Anthropic",
+                            "MODEL_PROVIDER_OPENAI" => "OpenAI",
+                            _ => "Antigravity",
+                        };
+                        results.push((
+                            id,
+                            format!("{} (Antigravity, {})", name, provider_label),
+                            "antigravity".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
         results
     }
 }
@@ -758,7 +826,7 @@ mod tests {
         let cfg = AppConfig::default();
         let router = ProviderRouter::new(cfg, std::env::temp_dir());
         let models = router.get_available_models();
-        assert!(models.len() >= 70, "should have 75+ models, got {}", models.len());
+        assert!(models.len() >= 80, "should have 80+ models, got {}", models.len());
         assert!(models.iter().any(|(id,_,_)| *id=="cursor-claude-3-7-sonnet"));
         assert!(models.iter().any(|(id,_,_)| *id=="trae-kimi-k2.5"));
         assert!(models.iter().any(|(id,_,_)| *id=="groq-llama-3.3-70b"));

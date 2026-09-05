@@ -63,7 +63,8 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let proj_name = app.work_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".to_string());
     let current_branch = crate::environment::EnvironmentManager::get_current_branch(&app.work_dir).unwrap_or_else(|_| "main".to_string());
 
-    let header_line = Line::from(vec![
+    // Lewa strona — brand + projekt + branch + tryb + model
+    let left_line = Line::from(vec![
         Span::styled(" ● ", Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
         Span::styled("opencode", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled("-rs ", Style::default().fg(theme.secondary)),
@@ -73,13 +74,45 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!(" ◈ {} ", app.active_model), Style::default().fg(theme.secondary)),
     ]);
 
-    let header_widget = Paragraph::new(header_line).block(
+    // Prawa strona — pełna ścieżka katalogu (żeby nie zgubić się w projektach)
+    let full_path = app.work_dir.display().to_string();
+    // Skróć jeśli za długa — pokaż ostatnie 3 segmenty
+    let path_display = if full_path.chars().count() > 60 {
+        let segments: Vec<&str> = full_path.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+        if segments.len() > 3 {
+            format!("...\\{}", segments[segments.len()-3..].join("\\"))
+        } else {
+            full_path
+        }
+    } else {
+        full_path
+    };
+    let right_line = Line::from(vec![
+        Span::styled(" 📂 ", Style::default().fg(theme.text_muted)),
+        Span::styled(path_display, Style::default().fg(theme.text_muted).add_modifier(Modifier::DIM)),
+        Span::styled(" ", Style::default()),
+    ]);
+
+    let header_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(20), Constraint::Length(70)])
+        .split(area);
+
+    let header_widget = Paragraph::new(left_line).block(
         Block::default()
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(theme.border)),
     );
+    let right_widget = Paragraph::new(right_line)
+        .alignment(Alignment::Right)
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(theme.border)),
+        );
 
-    f.render_widget(header_widget, area);
+    f.render_widget(header_widget, header_chunks[0]);
+    f.render_widget(right_widget, header_chunks[1]);
 }
 
 fn render_chat_column(f: &mut Frame, area: Rect, app: &App) {

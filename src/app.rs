@@ -1249,6 +1249,74 @@ impl App {
                     return Ok(());
                 }
             }
+            "/context" => {
+                // Podgląd zużycia context window — rozkład tokenów per komponent.
+                let ctx = crate::agent::context::ContextManager::new(self.work_dir.clone());
+                let system_prompt = ctx.build_system_prompt(&self.active_model, "coder");
+                let system_tokens = system_prompt.len() / 4;
+
+                // History (wszystkie wiadomości)
+                let history_tokens: usize = self.messages.iter().map(|m| m.content.len() / 4).sum();
+                let user_msgs = self.messages.iter().filter(|m| m.role == "user").count();
+                let assistant_msgs = self.messages.iter().filter(|m| m.role == "assistant").count();
+                let system_msgs = self.messages.iter().filter(|m| m.role == "system").count();
+                let tool_msgs = self.messages.iter().filter(|m| m.role == "tool" || m.role == "function").count();
+
+                // Memory blocks
+                let mb = crate::memory::MemoryBlocks::new(self.work_dir.clone());
+                let blocks = mb.load_all();
+                let memory_chars: usize = blocks.iter().map(|(_, c)| c.len()).sum();
+                let memory_tokens = memory_chars / 4;
+                let non_empty_blocks = blocks.iter().filter(|(_, c)| !c.is_empty()).count();
+
+                // Archival
+                let archival_count = crate::archival::ArchivalMemory::open(&self.work_dir)
+                    .map(|a| a.count())
+                    .unwrap_or(0);
+
+                // Plan
+                let plan = crate::memory::ProjectPlan::load(&self.work_dir);
+                let plan_tokens = plan.to_markdown().len() / 4;
+
+                // Skills
+                let sm = crate::skills::SkillsManager::new(self.work_dir.clone());
+                let skills_count = sm.list_skills().len();
+
+                // Total
+                let total = system_tokens + history_tokens;
+                let max_context = 128_000; // typowy limit
+                let pct = (total as f64 / max_context as f64 * 100.0).round() as u64;
+
+                let report = format!(
+                    "📊 KONTEXT WINDOW — zużycie tokenów\n\
+                     ═══════════════════════════════════════════════════\n\
+                     System prompt:     {:>6} tok  (memory blocks + plan + skills + instrukcje)\n\
+                     ├─ Memory blocks:  {:>6} tok  ({}/{} niepustych)\n\
+                     ├─ Plan projektu:  {:>6} tok  ({} kroków)\n\
+                     ├─ Skille:         {:>6} count ({} załadowanych)\n\
+                     └─ Archival:       {:>6} wpisów (on-demand, nie w prompt)\n\
+                     Historia czatu:    {:>6} tok  ({} wiadomości: {} user, {} assistant, {} system, {} tool)\n\
+                     ═══════════════════════════════════════════════════\n\
+                     RAZEM:             {:>6} tok  / ~{}k context  ({}%)\n\
+                     {}\n\
+                     \n\
+                     💡 Komendy:\n\
+                     • /compact — skompresuj historię (streszczenie)\n\
+                     • /clear — wyczyść historię (zachowuje memory)\n\
+                     • /palace — podgląd pełnego stanu pamięci",
+                    system_tokens,
+                    memory_tokens, non_empty_blocks, crate::memory::BLOCK_LABELS.len(),
+                    plan_tokens, plan.steps.len(),
+                    skills_count, skills_count,
+                    archival_count,
+                    history_tokens, self.messages.len(), user_msgs, assistant_msgs, system_msgs, tool_msgs,
+                    total, max_context / 1000, pct,
+                    if pct > 80 { "⚠️ Kontekst blisko limitu — rozważ /compact" }
+                    else if pct > 60 { "🟡 Kontekst rośnie — monitoruj" }
+                    else { "✅ Kontekst w normie" }
+                );
+                self.messages.push(ChatMessage { role: "system".to_string(), content: report });
+            }
             "/skill-learn" => {
                 // Refleksja: każe agentowi przemyśleć sesję i utworzyć learned skill z doświadczenia.
                 let all_msgs: Vec<&ChatMessage> = self.messages.iter()
@@ -2556,5 +2624,155 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+
+    fn fresh_app() -> App {
+        let dir = std::env::temp_dir().join(format!(
+            "opencode_app_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).ok();
+        let cfg = AppConfig::default();
+        App::new(dir, cfg)
+    }
+
+    #[test]
+    fn test_model_provider_tabs_count_and_order() {
+        let tabs = App::model_provider_tabs();
+        assert!(tabs.len() >= 15, "expected 15+ tabs, got {}", tabs.len());
+        // Pierwsza zakładka = Favorites
+        assert_eq!(tabs[0].1, "fav");
+        // Druga = All Models
+        assert_eq!(tabs[1].1, "all");
+        // Antigravity tab exists
+        assert!(tabs.iter().any(|(_, tag)| *tag == "antigravity"));
+    }
+
+    #[tokio::test]
+    async fn test_filtered_models_all_tab() {
+        let app = fresh_app();
+        // Zakładka "all" (index 1) powinna zwrócić wszystkie modele
+        let mut app = app;
+        app.model_filter_index = 1; // "all"
+        let filtered = app.filtered_models();
+        assert!(!filtered.is_empty(), "filtered_models dla 'all' nie powinno być puste");
+    }
+
+    #[tokio::test]
+    async fn test_filtered_models_fav_tab() {
+        let dir = std::env::temp_dir().join(format!(
+            "opencode_app_fav_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).ok();
+        let mut cfg = AppConfig::default();
+        cfg.favorite_models = vec!["cursor-claude-3-7-sonnet".to_string()];
+        let mut app = App::new(dir.clone(), cfg);
+        app.model_filter_index = 0; // "fav"
+        let filtered = app.filtered_models();
+        assert!(
+            filtered.iter().any(|(id, _, _)| id == "cursor-claude-3-7-sonnet"),
+            "fav tab powinno zawierać cursor-claude-3-7-sonnet"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_filtered_models_antigravity_tab() {
+        let mut app = fresh_app();
+        // Znajdź index zakładki antigravity
+        let tabs = App::model_provider_tabs();
+        let ag_idx = tabs.iter().position(|(_, tag)| *tag == "antigravity")
+            .expect("antigravity tab should exist");
+        app.model_filter_index = ag_idx;
+        let filtered = app.filtered_models();
+        // Powinno zawierać modele antigravity-*
+        assert!(
+            filtered.iter().any(|(id, _, _)| id.starts_with("antigravity-")),
+            "antigravity tab powinno zawierać modele antigravity-*"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_app_new_initializes_correctly() {
+        let app = fresh_app();
+        assert!(!app.active_model.is_empty(), "active_model nie powinno być puste");
+        assert_eq!(app.agent_mode, "coder");
+        assert!(!app.is_streaming);
+        assert!(!app.show_model_picker);
+        assert!(!app.show_session_picker);
+        assert!(app.show_sidebar);
+        assert!(!app.available_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_app_model_picker_toggle() {
+        let mut app = fresh_app();
+        assert!(!app.show_model_picker);
+        app.show_model_picker = true;
+        assert!(app.show_model_picker);
+    }
+
+    #[tokio::test]
+    async fn test_app_session_save_and_load() {
+        let mut app = fresh_app();
+        app.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: "test message".to_string(),
+        });
+        app.save_current_session();
+        // Po zapisie current_session powinna mieć messages
+        assert!(!app.current_session.messages.is_empty());
+        assert_eq!(app.current_session.messages.last().unwrap().content, "test message");
+    }
+
+    #[tokio::test]
+    async fn test_app_clear_messages() {
+        let mut app = fresh_app();
+        // Wyczyść messages (mogą być załadowane z ostatniej sesji)
+        app.messages.clear();
+        // Dodaj dwa messages
+        app.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        });
+        app.messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: "response".to_string(),
+        });
+        assert_eq!(app.messages.len(), 2);
+        app.messages.clear();
+        assert!(app.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_app_model_switch() {
+        let mut app = fresh_app();
+        let original = app.active_model.clone();
+        app.active_model = "gemini-3.7-flash".to_string();
+        assert_ne!(app.active_model, original);
+        assert_eq!(app.active_model, "gemini-3.7-flash");
+    }
+
+    #[tokio::test]
+    async fn test_app_scroll_offset() {
+        let mut app = fresh_app();
+        assert_eq!(app.scroll_offset, 0);
+        app.scroll_offset = 10;
+        assert_eq!(app.scroll_offset, 10);
+    }
+
+    #[tokio::test]
+    async fn test_app_spinner_frame() {
+        let mut app = fresh_app();
+        assert_eq!(app.spinner_frame, 0);
+        app.spinner_frame = 5;
+        assert_eq!(app.spinner_frame, 5);
     }
 }

@@ -37,4 +37,7 @@ pub mod web;
 pub mod taste;
 pub mod skills;
 pub mod memory;
+pub mod archival;
 pub mod e2e;
+pub mod acp_server;
+pub mod database;

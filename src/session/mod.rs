@@ -31,6 +31,7 @@ pub struct SessionMetadata {
 pub struct SessionManager {
     work_dir: PathBuf,
     storage_dir: PathBuf,
+    db: Option<crate::database::Database>,
 }
 
 impl SessionManager {
@@ -63,9 +64,13 @@ impl SessionManager {
         let storage_dir = Self::resolve_storage_dir(&work_dir, storage_mode);
         fs::create_dir_all(&storage_dir).ok();
 
+        // Otwórz DevFortDB — jeśli się nie uda, fallback do JSON
+        let db = crate::database::Database::open(&work_dir).ok();
+
         Self {
             work_dir,
             storage_dir,
+            db,
         }
     }
 
@@ -108,6 +113,20 @@ impl SessionManager {
     }
 
     pub fn save_session(&self, session: &ChatSession) -> Result<()> {
+        // 1. DB primary — zapis do DevFortDB
+        if let Some(db) = &self.db {
+            if db.put_session(&session.id, session).is_ok() {
+                // Migracja: usuń stary plik JSON jeśli istnieje (już w DB)
+                let old_json = self.storage_dir.join(format!("{}.json", session.id));
+                if old_json.exists() {
+                    let _ = fs::remove_file(&old_json);
+                }
+                return Ok(());
+            }
+            // DB failed — fallback do JSON
+        }
+
+        // 2. JSON fallback
         let file_path = self.storage_dir.join(format!("{}.json", session.id));
         let json = serde_json::to_string_pretty(session)?;
         fs::write(file_path, json)?;
@@ -115,17 +134,39 @@ impl SessionManager {
     }
 
     pub fn load_session(&self, id: &str) -> Result<ChatSession> {
+        // 1. DB primary
+        if let Some(db) = &self.db {
+            if let Ok(Some(session)) = db.get_session::<ChatSession>(id) {
+                return Ok(session);
+            }
+            // DB miss — spróbuj JSON (może być stara sesja niezmigrowana)
+        }
+
+        // 2. JSON fallback + auto-migracja do DB
         let file_path = self.storage_dir.join(format!("{}.json", id));
         if !file_path.exists() {
             return Err(anyhow!("Sesja o ID {} nie istnieje", id));
         }
 
-        let content = fs::read_to_string(file_path)?;
+        let content = fs::read_to_string(&file_path)?;
         let session = serde_json::from_str::<ChatSession>(&content)?;
+
+        // Auto-migracja: zapisz do DB, usuń JSON
+        if let Some(db) = &self.db {
+            if db.put_session(&session.id, &session).is_ok() {
+                let _ = fs::remove_file(&file_path);
+            }
+        }
+
         Ok(session)
     }
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
+        // 1. DB
+        if let Some(db) = &self.db {
+            let _ = db.delete_session(id);
+        }
+        // 2. JSON (może istnieć jeśli DB nie był używany)
         let file_path = self.storage_dir.join(format!("{}.json", id));
         if file_path.exists() {
             fs::remove_file(file_path)?;
@@ -135,17 +176,14 @@ impl SessionManager {
 
     pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
         let mut sessions = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
 
-        if !self.storage_dir.exists() {
-            return Ok(sessions);
-        }
-
-        for entry in fs::read_dir(&self.storage_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(session) = serde_json::from_str::<ChatSession>(&content) {
+        // 1. DB primary
+        if let Some(db) = &self.db {
+            if let Ok(ids) = db.list_sessions() {
+                for id in ids {
+                    if let Ok(Some(session)) = db.get_session::<ChatSession>(&id) {
+                        seen_ids.insert(session.id.clone());
                         sessions.push(SessionMetadata {
                             id: session.id,
                             title: session.title,
@@ -154,6 +192,31 @@ impl SessionManager {
                             model: session.model,
                             message_count: session.messages.len(),
                         });
+                    }
+                }
+            }
+        }
+
+        // 2. JSON fallback — sesje niezmigrowane
+        if self.storage_dir.exists() {
+            for entry in fs::read_dir(&self.storage_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(session) = serde_json::from_str::<ChatSession>(&content) {
+                            if seen_ids.contains(&session.id) {
+                                continue; // już w DB
+                            }
+                            sessions.push(SessionMetadata {
+                                id: session.id,
+                                title: session.title,
+                                created_at: session.created_at,
+                                updated_at: session.updated_at,
+                                model: session.model,
+                                message_count: session.messages.len(),
+                            });
+                        }
                     }
                 }
             }

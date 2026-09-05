@@ -15,12 +15,13 @@ categories = ["command-line-utilities", "development-tools"]
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
 anyhow = "1.0"
 thiserror = "2.0"
 similar = { version = "2.6", features = ["inline"] }
@@ -34,9 +35,20 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dotenvy = "0.15"
 agent-client-protocol = "2.0"
 
+# DevFortDB embedded — wbudowana baza danych (MDBX, ACID, TTL, JSON, HNSW)
+devfortdb-embedded-api = { path = "../baza/crates/embedded-api" }
+devfortdb-core = { path = "../baza/crates/core" }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Vendored MDBX sys bindings (Windows fix — puste bindings_windows.rs w upstream)
+[patch.crates-io]
+signet-mdbx-sys = { path = "vendor/signet-mdbx-sys" }
+
+[dev-dependencies]
+tempfile = "3"

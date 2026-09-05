@@ -52,48 +52,74 @@ function startBridgeServer(port, statusBarItem) {
             }));
             return;
         }
-        // 2. List Models (/v1/models)
+        // 1b. Debug endpoint — raw vscode.lm.selectChatModels() output
+        if (url === '/v1/lm/debug' && req.method === 'GET') {
+            try {
+                if (typeof vscode.lm === 'undefined') {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'vscode.lm undefined' }));
+                    return;
+                }
+                const lmModels = await vscode.lm.selectChatModels();
+                const raw = (lmModels || []).map((m) => ({
+                    id: m.id,
+                    name: m.name,
+                    vendor: m.vendor,
+                    family: m.family,
+                    version: m.version,
+                    maxInputTokens: m.maxInputTokens,
+                    maxOutputTokens: m.maxOutputTokens,
+                    capabilities: m.capabilities
+                }));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ count: raw.length, models: raw }, null, 2));
+            }
+            catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e.message }));
+            }
+            return;
+        }
+        // 2. List Models (/v1/models) — DYNAMIC, queries vscode.lm
         if (url === '/v1/models' && req.method === 'GET') {
             try {
-                let availableModels = [
-                    { id: 'opencode-zen', name: 'OpenCode Zen (Claude 3.7 Hybrid & Thinking)', provider: 'opencode' },
-                    { id: 'opencode-go', name: 'OpenCode Go (Fast)', provider: 'opencode' },
-                    { id: 'opencode-flash', name: 'OpenCode Flash 3.7 (Instant)', provider: 'opencode' },
-                    { id: 'opencode-pro', name: 'OpenCode Pro (Deep Reasoning)', provider: 'opencode' },
-                    { id: 'opencode-claude-3-7-sonnet', name: 'Claude 3.7 Sonnet (OpenCode)', provider: 'opencode' },
-                    { id: 'opencode-gpt-4o', name: 'GPT-4o Omnimodal (OpenCode)', provider: 'opencode' },
-                    { id: 'opencode-deepseek-r1', name: 'DeepSeek R1 (OpenCode)', provider: 'opencode' },
-                    { id: 'antigravity-claude-3-7', name: 'Claude 3.7 Sonnet Thinking (Antigravity)', provider: 'antigravity' },
-                    { id: 'antigravity-claude-3-5-sonnet', name: 'Claude 3.5 Sonnet (Antigravity)', provider: 'antigravity' },
-                    { id: 'antigravity-gemini-3-7-pro', name: 'Gemini 3.7 Pro (Antigravity)', provider: 'antigravity' },
-                    { id: 'antigravity-gemini-3-7-flash', name: 'Gemini 3.7 Flash (Antigravity)', provider: 'antigravity' },
-                    { id: 'antigravity-deepseek-r1', name: 'DeepSeek R1 (Antigravity)', provider: 'antigravity' },
-                    { id: 'antigravity-gpt-4o', name: 'GPT-4o Omnimodal (Antigravity)', provider: 'antigravity' },
-                    { id: 'commandcode-claude-3-7-sonnet', name: 'Claude 3.7 Sonnet Thinking (Command Code)', provider: 'commandcode' },
-                    { id: 'commandcode-claude-3-5-sonnet', name: 'Claude 3.5 Sonnet v2 (Command Code)', provider: 'commandcode' },
-                    { id: 'commandcode-gpt-4o', name: 'GPT-4o Omnimodal (Command Code)', provider: 'commandcode' },
-                    { id: 'commandcode-deepseek-r1', name: 'DeepSeek R1 (Command Code)', provider: 'commandcode' },
-                    { id: 'cursor-claude-3-7-sonnet', name: 'Claude 3.7 Sonnet (Cursor)', provider: 'cursor' },
-                    { id: 'cursor-gpt-4o', name: 'GPT-4o (Cursor)', provider: 'cursor' },
-                    { id: 'windsurf-cascade-sonnet', name: 'Claude 3.7 Sonnet (Windsurf)', provider: 'windsurf' },
-                    { id: 'devin-cascade-sonnet', name: 'Claude 3.7 Sonnet (Devin)', provider: 'windsurf' },
-                    { id: 'trae-seed-2.1-turbo', name: 'Seed 2.1 Turbo (Trae)', provider: 'trae' },
-                    { id: 'trae-kimi-k2.5', name: 'Kimi K2.5 (Trae)', provider: 'trae' },
-                    { id: 'trae-minimax-m3', name: 'MiniMax M3 (Trae)', provider: 'trae' },
-                    { id: 'copilot-gpt-4o', name: 'GPT-4o (GitHub Copilot)', provider: 'copilot' },
-                    { id: 'amazon-q', name: 'Amazon Q Developer', provider: 'amazon-q' },
-                    { id: 'augment-code', name: 'Augment Code Agent', provider: 'augment' }
-                ];
-                // If vscode.lm is available, also query system chat models
+                let availableModels = [];
+                // Query vscode.lm dynamically — this returns ALL models available in the editor
                 if (typeof vscode.lm !== 'undefined') {
                     try {
                         const lmModels = await vscode.lm.selectChatModels();
                         if (lmModels && lmModels.length > 0) {
                             for (const m of lmModels) {
+                                const vendor = (m.vendor || '').toLowerCase();
+                                const id = (m.id || '').toLowerCase();
+                                const name = m.name || m.id || 'unknown';
+                                // Map vendor to provider category
+                                let provider = m.vendor || 'vscode';
+                                if (vendor.includes('codeium') || vendor.includes('windsurf'))
+                                    provider = 'windsurf';
+                                else if (vendor.includes('cursor'))
+                                    provider = 'cursor';
+                                else if (vendor.includes('trae') || vendor.includes('bytedance'))
+                                    provider = 'trae';
+                                else if (vendor.includes('copilot') || vendor.includes('github'))
+                                    provider = 'copilot';
+                                else if (vendor.includes('google') || vendor.includes('antigravity') || id.includes('gemini'))
+                                    provider = 'antigravity';
+                                else if (vendor.includes('anthropic') || id.includes('claude'))
+                                    provider = 'anthropic';
+                                else if (vendor.includes('openai') || id.includes('gpt'))
+                                    provider = 'openai';
+                                else if (vendor.includes('amazon'))
+                                    provider = 'amazon-q';
+                                else if (vendor.includes('augment'))
+                                    provider = 'augment';
                                 availableModels.push({
-                                    id: `vscode-lm-${m.id}`,
-                                    name: `${m.name || m.id} (${m.vendor || 'VSCode LM'})`,
-                                    provider: m.vendor || 'vscode'
+                                    id: m.id,
+                                    name: name,
+                                    provider: provider,
+                                    vendor: m.vendor || '',
+                                    maxInputTokens: m.maxInputTokens || 0,
+                                    maxOutputTokens: m.maxOutputTokens || 0
                                 });
                             }
                         }
@@ -101,6 +127,19 @@ function startBridgeServer(port, statusBarItem) {
                     catch (e) {
                         // ignore LM lookup errors
                     }
+                }
+                // Fallback: if vscode.lm returned nothing, use minimal hardcoded list
+                if (availableModels.length === 0) {
+                    availableModels = [
+                        { id: 'cursor-claude-3-7-sonnet', name: 'Claude 3.7 Sonnet (Cursor)', provider: 'cursor' },
+                        { id: 'cursor-gpt-4o', name: 'GPT-4o (Cursor)', provider: 'cursor' },
+                        { id: 'windsurf-cascade-sonnet', name: 'Claude 3.7 Sonnet (Windsurf)', provider: 'windsurf' },
+                        { id: 'trae-seed-2.1-turbo', name: 'Seed 2.1 Turbo (Trae)', provider: 'trae' },
+                        { id: 'antigravity-claude-3-7', name: 'Claude 3.7 (Antigravity)', provider: 'antigravity' },
+                        { id: 'copilot-gpt-4o', name: 'GPT-4o (GitHub Copilot)', provider: 'copilot' },
+                        { id: 'amazon-q', name: 'Amazon Q Developer', provider: 'amazon-q' },
+                        { id: 'augment-code', name: 'Augment Code Agent', provider: 'augment' }
+                    ];
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ object: 'list', data: availableModels }));

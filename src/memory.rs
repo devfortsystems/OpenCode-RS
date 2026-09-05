@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::database::Database;
+
 /// Etykiety bloków pamięci (label = unikalny identyfikator, jak w Letta).
 pub const BLOCK_LABELS: &[&str] = &["persona", "human", "project"];
 
@@ -49,11 +51,16 @@ pub fn block_description(label: &str) -> &'static str {
 
 pub struct MemoryBlocks {
     work_dir: PathBuf,
+    /// Wbudowana baza DevFortDB — primary storage dla memory blocks.
+    /// None = DB niedostępna (fallback do plików .md).
+    db: Option<Database>,
 }
 
 impl MemoryBlocks {
     pub fn new(work_dir: PathBuf) -> Self {
-        Self { work_dir }
+        // Próbuj otworzyć DB (non-fatal — fallback do plików .md)
+        let db = Database::open(&work_dir).ok();
+        Self { work_dir, db }
     }
 
     fn home_dir() -> Option<PathBuf> {
@@ -81,12 +88,35 @@ impl MemoryBlocks {
     }
 
     /// Wczytuje zawartość bloku (pusty string jeśli nie istnieje).
+    /// Primary: DevFortDB. Fallback: plik .md (legacy — pełna treść, przed migracją).
     pub fn load_block(&self, label: &str) -> String {
-        self.block_path(label)
+        // 1) Spróbuj z DevFortDB (primary)
+        if let Some(ref db) = self.db {
+            if let Ok(Some(content)) = db.get_str::<String>("memory", label) {
+                let trimmed = content.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+
+        // 2) Fallback: plik .md (legacy — pełna treść, przed migracją do skrótów)
+        let from_file = self.block_path(label)
             .and_then(|p| fs::read_to_string(&p).ok())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // 3) Auto-migracja: jeśli plik ma pełną treść (nie skrót), zapisz do DB
+        if !from_file.is_empty() && !from_file.starts_with("# Memory block:") {
+            if let Some(ref db) = self.db {
+                let _ = db.put_str("memory", label, &from_file);
+            }
+            return from_file;
+        }
+
+        // 4) Skrót .md — nie jest pełną treścią, zwróć pusty (DB ma pełną)
+        String::new()
     }
 
     /// Wczytuje wszystkie bloki jako (label, content).
@@ -95,6 +125,7 @@ impl MemoryBlocks {
     }
 
     /// Zapisuje zawartość bloku (tworzy katalogi jeśli trzeba, przycina do limitu).
+    /// Primary: DevFortDB. Mirror: plik .md ze skrótową informacją (jak się dostać do bazy).
     pub fn save_block(&self, label: &str, content: &str) -> anyhow::Result<()> {
         if !BLOCK_LABELS.contains(&label) {
             anyhow::bail!("Nieznany blok pamięci: '{label}'. Dostępne: {}", BLOCK_LABELS.join(", "));
@@ -106,12 +137,42 @@ impl MemoryBlocks {
                 len = trimmed.len()
             );
         }
+
+        // 1) DevFortDB (primary — pełna treść)
+        if let Some(ref db) = self.db {
+            db.put_str("memory", label, &trimmed.to_string())?;
+        }
+
+        // 2) Mirror .md — skrótowa informacja (jak się dostać do pełnej treści w bazie)
         let path = self.block_path(label)
             .ok_or_else(|| anyhow::anyhow!("Nie można ustalić ścieżki pamięci dla bloku '{label}' (brak HOME)?"))?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&path, trimmed)?;
+        let scope = match BlockScope::for_label(label) {
+            BlockScope::Global => "global",
+            BlockScope::Project => "project",
+        };
+        let char_count = trimmed.chars().count();
+        let preview: String = trimmed.chars().take(80).collect();
+        let suffix = if char_count > 80 { "..." } else { "" };
+        let stub = format!(
+            "# Memory block: {label} [{scope}]\n\
+             \n\
+             Pełna treść ({char_count} znaków) jest w **DevFortDB**:\n\
+             \n\
+             - Baza: `.opencode/db/opencode.mdb`\n\
+             - Namespace: `memory`\n\
+             - Klucz: `{label}`\n\
+             - Odczyt: `opencode` → komenda `/memory show {label}`\n\
+             \n\
+             Podgląd:\n\
+             ```\n\
+             {preview}{suffix}\n\
+             ```\n"
+        );
+        fs::write(&path, stub)?;
+
         Ok(())
     }
 

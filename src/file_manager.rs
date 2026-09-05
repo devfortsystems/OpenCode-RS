@@ -520,3 +520,284 @@ fn build_tree_recursive(dir: &Path, depth: usize, out: &mut Vec<TreeEntry>, max_
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "opencode_fm_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+
+    #[test]
+    fn test_file_color_directories() {
+        assert_eq!(PaneState::file_color("src", true), "dir");
+        assert_eq!(PaneState::file_color("my_folder", true), "dir");
+    }
+
+    #[test]
+    fn test_file_color_code_files() {
+        assert_eq!(PaneState::file_color("main.rs", false), "code");
+        assert_eq!(PaneState::file_color("app.py", false), "code");
+        assert_eq!(PaneState::file_color("index.ts", false), "code");
+        assert_eq!(PaneState::file_color("Component.tsx", false), "code");
+        assert_eq!(PaneState::file_color("main.go", false), "code");
+        assert_eq!(PaneState::file_color("Main.java", false), "code");
+    }
+
+    #[test]
+    fn test_file_color_config_files() {
+        assert_eq!(PaneState::file_color("config.json", false), "config");
+        assert_eq!(PaneState::file_color("Cargo.toml", false), "config");
+        assert_eq!(PaneState::file_color("docker-compose.yaml", false), "config");
+        assert_eq!(PaneState::file_color("app.yml", false), "config");
+        assert_eq!(PaneState::file_color("pom.xml", false), "config");
+    }
+
+    #[test]
+    fn test_file_color_text_files() {
+        assert_eq!(PaneState::file_color("README.md", false), "text");
+        assert_eq!(PaneState::file_color("notes.txt", false), "text");
+        assert_eq!(PaneState::file_color("app.log", false), "text");
+    }
+
+    #[test]
+    fn test_file_color_archive_files() {
+        assert_eq!(PaneState::file_color("backup.zip", false), "archive");
+        assert_eq!(PaneState::file_color("data.tar", false), "archive");
+        assert_eq!(PaneState::file_color("log.gz", false), "archive");
+        assert_eq!(PaneState::file_color("archive.7z", false), "archive");
+    }
+
+    #[test]
+    fn test_file_color_image_files() {
+        assert_eq!(PaneState::file_color("photo.png", false), "image");
+        assert_eq!(PaneState::file_color("avatar.jpg", false), "image");
+        assert_eq!(PaneState::file_color("anim.gif", false), "image");
+        assert_eq!(PaneState::file_color("logo.svg", false), "image");
+    }
+
+    #[test]
+    fn test_file_color_binary_files() {
+        assert_eq!(PaneState::file_color("app.exe", false), "binary");
+        assert_eq!(PaneState::file_color("lib.dll", false), "binary");
+        assert_eq!(PaneState::file_color("module.so", false), "binary");
+    }
+
+    #[test]
+    fn test_file_color_unknown_extension() {
+        assert_eq!(PaneState::file_color("data.xyz", false), "default");
+        assert_eq!(PaneState::file_color("noext", false), "default");
+        assert_eq!(PaneState::file_color("file.123", false), "default");
+    }
+
+    #[test]
+    fn test_file_color_case_insensitive_extension() {
+        // Extension jest lowercased przed match
+        assert_eq!(PaneState::file_color("Main.RS", false), "code");
+        assert_eq!(PaneState::file_color("Config.JSON", false), "config");
+        assert_eq!(PaneState::file_color("Readme.MD", false), "text");
+    }
+
+    #[test]
+    fn test_pane_state_new() {
+        let root = fresh_dir();
+        let pane = PaneState::new(root.join("left"), &root);
+        assert_eq!(pane.view_mode, FileViewMode::List);
+        assert_eq!(pane.quick_search, "");
+        assert_eq!(pane.selection_count(), 0);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_pane_state_selection() {
+        let root = fresh_dir();
+        let mut pane = PaneState::new(root.join("left"), &root);
+        assert_eq!(pane.selection_count(), 0);
+
+        // Dodaj ścieżkę do zaznaczonych
+        pane.selected_paths.insert(root.join("test.rs"));
+        assert_eq!(pane.selection_count(), 1);
+
+        pane.selected_paths.insert(root.join("test2.rs"));
+        assert_eq!(pane.selection_count(), 2);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_pane_state_toggle_select() {
+        let root = fresh_dir();
+        let mut pane = PaneState::new(root.join("left"), &root);
+        // Ustaw items z jednym plikiem
+        pane.items = vec![FileItem {
+            name: "test.rs".to_string(),
+            path: root.join("test.rs"),
+            is_dir: false,
+            is_parent: false,
+            size_bytes: 100,
+            modified_str: "2024-01-01".to_string(),
+        }];
+        pane.selected_index = 0;
+
+        // Toggle select — powinno dodać do selected_paths
+        pane.toggle_select_current();
+        assert_eq!(pane.selection_count(), 1);
+
+        // Toggle ponownie — powinno usunąć
+        pane.toggle_select_current();
+        assert_eq!(pane.selection_count(), 0);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_pane_state_quick_search() {
+        let root = fresh_dir();
+        let mut pane = PaneState::new(root.join("left"), &root);
+
+        // Dodaj items
+        pane.items = vec![
+            FileItem {
+                name: "main.rs".to_string(),
+                path: root.join("main.rs"),
+                is_dir: false,
+                is_parent: false,
+                size_bytes: 100,
+                modified_str: "2024-01-01".to_string(),
+            },
+            FileItem {
+                name: "config.json".to_string(),
+                path: root.join("config.json"),
+                is_dir: false,
+                is_parent: false,
+                size_bytes: 50,
+                modified_str: "2024-01-01".to_string(),
+            },
+        ];
+
+        // Apply quick search
+        pane.apply_quick_search("main");
+        assert_eq!(pane.quick_search, "main");
+        assert!(pane.filtered_indices.is_some());
+
+        // Clear quick search
+        pane.clear_quick_search();
+        assert_eq!(pane.quick_search, "");
+        assert!(pane.filtered_indices.is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_pane_state_navigate_up_down() {
+        let root = fresh_dir();
+        let mut pane = PaneState::new(root.join("left"), &root);
+        pane.items = vec![
+            FileItem {
+                name: "file1.rs".to_string(),
+                path: root.join("file1.rs"),
+                is_dir: false,
+                is_parent: false,
+                size_bytes: 100,
+                modified_str: "2024-01-01".to_string(),
+            },
+            FileItem {
+                name: "file2.rs".to_string(),
+                path: root.join("file2.rs"),
+                is_dir: false,
+                is_parent: false,
+                size_bytes: 100,
+                modified_str: "2024-01-01".to_string(),
+            },
+            FileItem {
+                name: "file3.rs".to_string(),
+                path: root.join("file3.rs"),
+                is_dir: false,
+                is_parent: false,
+                size_bytes: 100,
+                modified_str: "2024-01-01".to_string(),
+            },
+        ];
+        pane.selected_index = 1;
+
+        // Navigate up
+        pane.navigate_up();
+        assert_eq!(pane.selected_index, 0);
+
+        // Navigate up na początku — powinno zostać na 0
+        pane.navigate_up();
+        assert_eq!(pane.selected_index, 0);
+
+        // Navigate down
+        pane.navigate_down();
+        assert_eq!(pane.selected_index, 1);
+
+        pane.navigate_down();
+        assert_eq!(pane.selected_index, 2);
+
+        // Navigate down na końcu — powinno zostać
+        pane.navigate_down();
+        assert_eq!(pane.selected_index, 2);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_file_manager_state_new() {
+        let root = fresh_dir();
+        let fm = FileManagerState::new(root.clone());
+        assert_eq!(fm.active_pane, ActivePane::Left);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_file_manager_state_switch_pane() {
+        let root = fresh_dir();
+        let mut fm = FileManagerState::new(root.clone());
+        assert_eq!(fm.active_pane, ActivePane::Left);
+        fm.switch_pane();
+        assert_eq!(fm.active_pane, ActivePane::Right);
+        fm.switch_pane();
+        assert_eq!(fm.active_pane, ActivePane::Left);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_file_manager_state_active_pane() {
+        let root = fresh_dir();
+        let mut fm = FileManagerState::new(root.clone());
+        let active1 = fm.active();
+        assert_eq!(active1.current_dir, root);
+
+        fm.switch_pane();
+        let active2 = fm.active();
+        assert_eq!(active2.current_dir, root);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn test_get_relative_path() {
+        let root = fresh_dir();
+        let fm = FileManagerState::new(root.clone());
+        let item = FileItem {
+            name: "test.rs".to_string(),
+            path: root.join("src").join("test.rs"),
+            is_dir: false,
+            is_parent: false,
+            size_bytes: 100,
+            modified_str: "2024-01-01".to_string(),
+        };
+        let rel = fm.get_relative_path(&item);
+        // Powinno zwrócić ścieżkę względną
+        assert!(rel.contains("test.rs"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

@@ -521,3 +521,145 @@ fn strip_json_comments(json: &str) -> String {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_json_comments_line_comments() {
+        let input = r#"{
+            "key": "value", // to jest komentarz
+            "num": 42
+        }"#;
+        let result = strip_json_comments(input);
+        // Komentarz powinien być usunięty
+        assert!(!result.contains("// to jest komentarz"));
+        // Wartości powinny zostać
+        assert!(result.contains("\"key\": \"value\""));
+        assert!(result.contains("\"num\": 42"));
+    }
+
+    #[test]
+    fn test_strip_json_comments_block_comments() {
+        let input = r#"{
+            /* blok komentarza */
+            "key": "value"
+        }"#;
+        let result = strip_json_comments(input);
+        assert!(!result.contains("blok komentarza"));
+        assert!(result.contains("\"key\": \"value\""));
+    }
+
+    #[test]
+    fn test_strip_json_comments_multiline_block() {
+        let input = r#"{
+            /* linia 1
+               linia 2
+               linia 3 */
+            "key": "value"
+        }"#;
+        let result = strip_json_comments(input);
+        assert!(!result.contains("linia 1"));
+        assert!(!result.contains("linia 2"));
+        assert!(!result.contains("linia 3"));
+        assert!(result.contains("\"key\": \"value\""));
+    }
+
+    #[test]
+    fn test_strip_json_comments_no_comments() {
+        let input = r#"{"key": "value", "num": 42}"#;
+        let result = strip_json_comments(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_strip_json_comments_preserves_strings() {
+        // Komentarz wewnątrz stringa nie powinien być usunięty
+        let input = r#"{"url": "http://example.com//path"}"#;
+        let result = strip_json_comments(input);
+        assert!(result.contains("http://example.com//path"));
+    }
+
+    #[test]
+    fn test_strip_json_comments_empty_input() {
+        assert_eq!(strip_json_comments(""), "");
+    }
+
+    #[test]
+    fn test_find_opencode_data_dirs_returns_vec() {
+        let dirs = OpenCodeMigration::find_opencode_data_dirs();
+        // Może być puste jeśli nie ma oryginalnego opencode, ale powinno być Vec
+        // (nie panic)
+        let _ = dirs.len();
+    }
+
+    #[test]
+    fn test_apply_env_key_openai() {
+        let mut config = AppConfig::default();
+        config.direct_openai_api_key = None;
+        let count = apply_env_key("OPENAI_API_KEY", "sk-test123", &mut config);
+        assert_eq!(count, 1);
+        assert_eq!(config.direct_openai_api_key, Some("sk-test123".to_string()));
+    }
+
+    #[test]
+    fn test_apply_env_key_anthropic() {
+        let mut config = AppConfig::default();
+        config.direct_anthropic_api_key = None;
+        let count = apply_env_key("ANTHROPIC_API_KEY", "sk-ant-test", &mut config);
+        assert_eq!(count, 1);
+        assert_eq!(config.direct_anthropic_api_key, Some("sk-ant-test".to_string()));
+    }
+
+    #[test]
+    fn test_apply_env_key_gemini() {
+        let mut config = AppConfig::default();
+        config.direct_gemini_api_key = None;
+        let count = apply_env_key("GEMINI_API_KEY", "AIza-test", &mut config);
+        assert_eq!(count, 1);
+        assert_eq!(config.direct_gemini_api_key, Some("AIza-test".to_string()));
+    }
+
+    #[test]
+    fn test_apply_env_key_google_alias() {
+        let mut config = AppConfig::default();
+        config.direct_gemini_api_key = None;
+        let count = apply_env_key("GOOGLE_API_KEY", "AIza-google", &mut config);
+        assert_eq!(count, 1);
+        assert_eq!(config.direct_gemini_api_key, Some("AIza-google".to_string()));
+    }
+
+    #[test]
+    fn test_apply_env_key_empty_value() {
+        let mut config = AppConfig::default();
+        let count = apply_env_key("OPENAI_API_KEY", "", &mut config);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_apply_env_key_already_set() {
+        let mut config = AppConfig::default();
+        config.direct_openai_api_key = Some("existing-key".to_string());
+        let count = apply_env_key("OPENAI_API_KEY", "new-key", &mut config);
+        // Nie powinno nadpisać istniejącego klucza
+        assert_eq!(count, 0);
+        assert_eq!(config.direct_openai_api_key, Some("existing-key".to_string()));
+    }
+
+    #[test]
+    fn test_apply_env_key_unknown_key() {
+        let mut config = AppConfig::default();
+        let count = apply_env_key("UNKNOWN_API_KEY", "some-value", &mut config);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_apply_env_key_case_insensitive() {
+        let mut config = AppConfig::default();
+        config.direct_groq_api_key = None;
+        let count = apply_env_key("groq_api_key", "gsk-test", &mut config);
+        assert_eq!(count, 1);
+        assert_eq!(config.direct_groq_api_key, Some("gsk-test".to_string()));
+    }
+}
