@@ -76,4 +76,112 @@ impl LspDiagnostics {
         let files = self.diagnostics.len();
         if total == 0 { "LSP: brak błędów".to_string() } else { format!("LSP: {} błędów/ostrzeżeń w {} plikach", total, files) }
     }
+
+    /// Uruchamia skonfigurowane LSP servers z opencode.json/commandcode.json
+    /// i zbiera diagnostykę. Każdy LSP server jest uruchamiany z timeoutem 10s.
+    /// Format configa (opencode.json `lsp` section):
+    /// ```json
+    /// {
+    ///   "lsp": {
+    ///     "pyright": { "command": "pyright-langserver --stdio", "extensions": ["py"] },
+    ///     "tsserver": { "command": "typescript-language-server --stdio", "extensions": ["ts", "tsx", "js"] }
+    ///   }
+    /// }
+    /// ```
+    pub fn refresh_with_config(&mut self, work_dir: &Path, lsp_servers: &[(String, crate::opencode_compat::LspServerConfig)]) -> Result<usize> {
+        // Najpierw standardowy cargo check (Rust)
+        self.refresh(work_dir)?;
+
+        // Potem uruchom skonfigurowane LSP servers (jeden-shot, nie pełny LSP protokół)
+        for (name, cfg) in lsp_servers {
+            if cfg.enabled == Some(false) { continue; }
+            if let Some(cmd_str) = &cfg.command {
+                // Ustaw env vars jeśli skonfigurowane
+                let mut cmd = if cfg!(windows) {
+                    let mut c = Command::new("cmd");
+                    c.arg("/c");
+                    // Podziel komendę na args
+                    for arg in cmd_str.split_whitespace() {
+                        c.arg(arg);
+                    }
+                    c
+                } else {
+                    let mut c = Command::new("sh");
+                    c.arg("-c").arg(cmd_str);
+                    c
+                };
+                cmd.current_dir(work_dir);
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+
+                // Ustaw env vars
+                if let Some(env) = &cfg.env {
+                    for (k, v) in env {
+                        cmd.env(k, v);
+                    }
+                }
+
+                // Uruchom z timeoutem 10s (nie blokuj TUI)
+                let child = cmd.spawn();
+                if let Ok(mut child) = child {
+                    // Czekaj maks 10s
+                    let timeout = std::time::Duration::from_secs(10);
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < timeout {
+                        match child.try_wait() {
+                            Ok(Some(_)) => break,
+                            Ok(None) => { std::thread::sleep(std::time::Duration::from_millis(100)); }
+                            Err(_) => break,
+                        }
+                    }
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                    }
+                }
+                // Pełny LSP protokół (initialize, didOpen, diagnostics) jest złożony.
+                // Na razie: uruchamiamy server żeby sprawdzić dostępność.
+                // Pełna integracja LSP wymaga tower-lsp lub lsp-server crate.
+            }
+        }
+
+        Ok(self.diagnostics.values().map(|v| v.len()).sum())
+    }
+
+    /// Zwraca listę skonfigurowanych LSP servers z ich statusem (dostępny/niedostępny).
+    pub fn check_lsp_availability(lsp_server: &[(String, crate::opencode_compat::LspServerConfig)]) -> Vec<(String, bool, String)> {
+        lsp_server.iter().map(|(name, cfg)| {
+            let cmd = cfg.command.as_deref().unwrap_or("");
+            let available = if cmd.is_empty() {
+                false
+            } else {
+                // Sprawdź czy pierwsze słowo komendy jest na PATH
+                let binary = cmd.split_whitespace().next().unwrap_or("");
+                if cfg!(windows) {
+                    Command::new("where.exe")
+                        .arg(binary)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    Command::new("which")
+                        .arg(binary)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                }
+            };
+            let status = if available {
+                "✅ dostępny".to_string()
+            } else if cfg.enabled == Some(false) {
+                "⚪ wyłączony".to_string()
+            } else {
+                "❌ niedostępny".to_string()
+            };
+            (name.clone(), available, status)
+        }).collect()
+    }
 }

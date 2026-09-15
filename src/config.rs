@@ -58,7 +58,7 @@ impl Default for AppConfig {
             auto_failover: true,
             fallback_chain: vec![
                 "cursor-claude-3-7-sonnet".to_string(),
-                "opencode-zen".to_string(),
+                "opencode-acp".to_string(),
                 "antigravity-claude-3-7".to_string(),
                 "commandcode-claude-3-7-sonnet".to_string(),
                 "windsurf-cascade-sonnet".to_string(),
@@ -108,8 +108,7 @@ impl Default for AppConfig {
             git_sync_mode: "both".to_string(),
             favorite_models: vec![
                 "cursor-claude-3-7-sonnet".to_string(),
-                "opencode-zen".to_string(),
-                "opencode-go".to_string(),
+                "opencode-acp".to_string(),
                 "antigravity-claude-3-7".to_string(),
                 "commandcode-claude-3-7-sonnet".to_string(),
                 "lmstudio/local-model".to_string(),

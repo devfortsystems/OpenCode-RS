@@ -20,17 +20,99 @@ pub struct Agent {
     context: ContextManager,
     mcp: Arc<McpManager>,
     work_dir: PathBuf,
+    /// Uprawnienia z opencode.json/commandcode (ask/allow/deny per tool).
+    permissions: Option<crate::opencode_compat::PermissionConfig>,
+    /// Pluginy opencode (.opencode/plugins/*.js|ts) — uruchamiane przez node.
+    plugins: Vec<crate::opencode_compat::LoadedPlugin>,
+    /// Mody commandcode (.commandcode/mods/*.ts) — uruchamiane przez node.
+    mods: Vec<crate::opencode_compat::LoadedMod>,
+    /// Kanał do TUI dla żądań uprawnień (permission "ask").
+    /// None = tryb headless (ask = allow).
+    permission_tx: Option<tokio::sync::mpsc::Sender<crate::app::AppEvent>>,
+    /// Persistent bridge dla modów commandcode (lazy init).
+    /// Mod bridges są uruchamiane raz i utrzymywane przez całą sesję.
+    mod_bridges: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<crate::mod_bridge::ModBridge>>>>,
 }
 
 impl Agent {
     pub fn new(router: Arc<ProviderRouter>, work_dir: PathBuf) -> Self {
         let mcp = Arc::new(McpManager::load_from_project_or_global(&work_dir));
+        let compat = crate::opencode_compat::OpenCodeCompat::load(&work_dir);
         Self {
             router,
             tools: Arc::new(ToolEngine::new(work_dir.clone())),
             context: ContextManager::new(work_dir.clone()),
             mcp,
             work_dir,
+            permissions: compat.permissions.clone().into(),
+            plugins: compat.plugins.clone(),
+            mods: compat.mods.clone(),
+            permission_tx: None,
+            mod_bridges: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Ustaw kanał do TUI dla żądań uprawnień (permission "ask").
+    pub fn set_permission_channel(&mut self, tx: tokio::sync::mpsc::Sender<crate::app::AppEvent>) {
+        self.permission_tx = Some(tx);
+    }
+
+    /// Sprawdza uprawnienie dla toola. Zwraca "allow", "deny", lub "ask".
+    pub fn check_tool_permission(&self, tool_name: &str) -> &str {
+        match &self.permissions {
+            Some(p) => match tool_name {
+                "edit_file" | "replace" | "patch" | "write_file" | "create_file" => {
+                    p.edit.as_deref().unwrap_or("ask")
+                }
+                "bash_exec" | "bash" | "shell" | "run_command" => {
+                    p.bash.as_deref().unwrap_or("ask")
+                }
+                "web_fetch" | "webfetch" | "fetch" => {
+                    p.webfetch.as_deref().unwrap_or("ask")
+                }
+                _ => "allow", // read-only tools zawsze allow
+            },
+            None => "allow", // brak konfiguracji = pełny dostęp (domyślne zachowanie)
+        }
+    }
+
+    /// Uruchamia plugin opencode przez node (bezpiecznie — błędy nie przerywają agenta).
+    fn execute_plugin_safe(&self, plugin: &crate::opencode_compat::LoadedPlugin, hook: &str, payload: &serde_json::Value) -> Result<String> {
+        if plugin.path.as_os_str().is_empty() {
+            return Ok(String::new()); // npm plugin — pomiń (wymaga instalacji)
+        }
+        let compat = crate::opencode_compat::OpenCodeCompat::load(&self.work_dir);
+        compat.execute_plugin(&plugin.path, hook, payload)
+    }
+
+    /// Uruchamia mod commandcode przez persistent ModBridge (pełny ModApi).
+    /// Bridge jest uruchamiany raz (lazy init) i utrzymywany przez całą sesję.
+    fn execute_mod_safe(&self, m: &crate::opencode_compat::LoadedMod, event: &str, payload: &serde_json::Value) -> Result<String> {
+        // Spróbuj użyć istniejącego bridge dla tego moda
+        let bridges = self.mod_bridges.lock().unwrap();
+        for bridge_arc in bridges.iter() {
+            if bridge_arc.lock().unwrap().mod_path == m.path {
+                let mut bridge = bridge_arc.lock().unwrap();
+                match bridge.send_event(event, payload) {
+                    Ok(result) => return Ok(serde_json::to_string(&result).unwrap_or_default()),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        drop(bridges);
+
+        // Bridge nie istnieje — uruchom nowy
+        match crate::mod_bridge::ModBridge::start(&m.path, &self.work_dir) {
+            Ok(bridge) => {
+                let bridge_arc = std::sync::Arc::new(std::sync::Mutex::new(bridge));
+                self.mod_bridges.lock().unwrap().push(bridge_arc.clone());
+                let mut b = bridge_arc.lock().unwrap();
+                match b.send_event(event, payload) {
+                    Ok(result) => Ok(serde_json::to_string(&result).unwrap_or_default()),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -75,8 +157,38 @@ impl Agent {
         token_tx: Sender<String>,
         context_tx: Sender<(usize, usize)>,
     ) -> Result<String> {
-        let system_prompt = self.context.build_system_prompt(active_model, mode);
-        let resolved_prompt = self.context.resolve_smart_context(user_input);
+        self.process_user_prompt_with_agent(active_model, mode, history, user_input, token_tx, context_tx, None).await
+    }
+
+    /// process_user_prompt z opcjonalnym promptem agenta (z opencode/commandcode agents).
+    pub async fn process_user_prompt_with_agent(
+        &self,
+        active_model: &str,
+        mode: &str,
+        history: &[ChatMessage],
+        user_input: &str,
+        token_tx: Sender<String>,
+        context_tx: Sender<(usize, usize)>,
+        agent_prompt: Option<&str>,
+    ) -> Result<String> {
+        let system_prompt = self.context.build_system_prompt_with_agent(active_model, mode, agent_prompt);
+        let mut resolved_prompt = self.context.resolve_smart_context(user_input);
+
+        // ── Plugin/Mod hooks: transformInput ──
+        // Mody commandcode mogą transformować prompt przed wysłaniem do modelu.
+        // Hook zwraca nowy prompt (jeśli nie pusty) lub undefined (pozostaw oryginalny).
+        let transform_payload = serde_json::json!({
+            "text": &resolved_prompt,
+            "session_id": "current",
+        });
+        for m in &self.mods {
+            if let Ok(transformed) = self.execute_mod_safe(m, "transformInput", &transform_payload) {
+                if !transformed.trim().is_empty() && !transformed.contains("undefined") {
+                    resolved_prompt = transformed;
+                    break; // pierwszy mod który transformuje wygrywa
+                }
+            }
+        }
 
         let mut messages = vec![ChatMessage {
             role: "system".to_string(),
@@ -129,8 +241,47 @@ impl Agent {
 
             // Wykonaj wszystkie wykryte narzędzia
             for call in tool_calls {
+                // ── Plugin/Mod hooks: tool.execute.before ──
+                // Uruchom pluginy opencode i mody commandcode przed wywołaniem toola.
+                // Hook może zablokować wykonanie (zwrócić block: true).
+                let hook_payload = serde_json::json!({
+                    "tool": call.name,
+                    "args": call.arguments,
+                    "session_id": "current",
+                });
+                let mut blocked = false;
+                // Pluginy opencode (.opencode/plugins/*.js|ts)
+                for plugin in &self.plugins {
+                    if let Ok(result) = self.execute_plugin_safe(plugin, "tool.execute.before", &hook_payload) {
+                        if result.contains("\"block\":true") || result.contains("block: true") {
+                            let _ = token_tx.send(format!("\n🚫 **[Plugin {}]** Zablokowano `{}`\n", plugin.name, call.name)).await;
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+                // Mody commandcode (.commandcode/mods/*.ts)
+                if !blocked {
+                    for m in &self.mods {
+                        if let Ok(result) = self.execute_mod_safe(m, "beforeToolCall", &hook_payload) {
+                            if result.contains("\"block\":true") || result.contains("block: true") {
+                                let _ = token_tx.send(format!("\n🚫 **[Mod {}]** Zablokowano `{}`\n", m.name, call.name)).await;
+                                blocked = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if blocked {
+                    messages.push(ChatMessage {
+                        role: "user".to_string(),
+                        content: format!("[Narzędzie `{}` zablokowane przez plugin/mod hook. Kontynuuj bez tego narzędzia.]", call.name),
+                    });
+                    continue;
+                }
+
                 let _ = token_tx.send(format!("\n\n⚙️ **[Agent Narzędzie: `{}`]** Wykonywanie...\n", call.name)).await;
-                
+
                 let execution_result = match self.execute_tool_call(&call.name, &call.arguments) {
                     Ok(out) => {
                         let _ = token_tx.send(format!("✅ **Wynik `{}`:**\n```\n{}\n```\n", call.name, &out[..out.len().min(4000)])).await;
@@ -142,6 +293,20 @@ impl Agent {
                         err_msg
                     }
                 };
+
+                // ── Plugin/Mod hooks: tool.execute.after ──
+                let after_payload = serde_json::json!({
+                    "tool": call.name,
+                    "args": call.arguments,
+                    "result": &execution_result[..execution_result.len().min(2000)],
+                    "session_id": "current",
+                });
+                for plugin in &self.plugins {
+                    let _ = self.execute_plugin_safe(plugin, "tool.execute.after", &after_payload);
+                }
+                for m in &self.mods {
+                    let _ = self.execute_mod_safe(m, "afterToolCall", &after_payload);
+                }
 
                 // Odsyłamy wynik narzędzia do kontekstu modelu na kolejną iterację pętli ReAct
                 messages.push(ChatMessage {
@@ -171,6 +336,41 @@ impl Agent {
 
     /// Wykonuje polecenie narzędzia wbudowanego lub zarejestrowanego serwera MCP
     pub fn execute_tool_call(&self, tool_name: &str, args: &serde_json::Value) -> Result<String> {
+        // 0. Sprawdź uprawnienia z opencode.json/commandcode (permission section)
+        let perm = self.check_tool_permission(tool_name);
+        if perm == "deny" {
+            return Err(anyhow::anyhow!(
+                "🚫 Narzędzie '{}' zablokowane przez konfigurację uprawnień (permission: deny).\n\
+                 Zmień w opencode.json/commandcode.json: \"permission\": {{\"{}\": \"allow\"}}",
+                tool_name,
+                match tool_name {
+                    "edit_file" | "replace" | "patch" | "write_file" | "create_file" => "edit",
+                    "bash_exec" | "bash" | "shell" | "run_command" => "bash",
+                    "web_fetch" | "webfetch" | "fetch" => "webfetch",
+                    _ => "edit",
+                }
+            ));
+        }
+        // "ask" — w trybie TUI wyślij powiadomienie (nie blokuj!)
+        // Pełny dialog wymagałby async execute_tool_call — to duża zmiana architektury.
+        // Na razie: "ask" = allow (nie blokuje TUI), ale loguj że tool został wykonany.
+        // TODO: async execute_tool_call z dialogiem uprawnień
+        if perm == "ask" {
+            if let Some(ref tx) = self.permission_tx {
+                let args_summary = serde_json::to_string(args)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+                // Wyślij powiadomienie (nie blokuj) — użytkownik widzi co się dzieje
+                let _ = tx.try_send(crate::app::AppEvent::StatusNotification(format!(
+                    "⚠️ Wykonuję '{}' (permission: ask)\nArgs: {}",
+                    tool_name, args_summary
+                )));
+            }
+        }
+        // "allow" — kontynuuj normalnie
+
         // 1. Sprawdź czy to wywołanie narzędzia serwera MCP (format: "mcp__server__tool" lub server_name w args)
         if tool_name.starts_with("mcp__") {
             let parts: Vec<&str> = tool_name.split("__").collect();

@@ -1,12 +1,18 @@
-//! Antigravity IDE provider — gRPC-Web do language_server.exe
+//! Antigravity IDE provider — Connect streaming JSON do language_server.exe
 //!
-//! Antigravity IDE używa lokalnego gRPC-Web server (language_server.exe) do komunikacji z modelami.
+//! Antigravity IDE używa lokalnego gRPC-Web/Connect server (language_server.exe) do komunikacji z modelami.
 //! Ten provider łączy się bezpośrednio z language server, omijając IDE.
 //!
 //! Wymaga uruchomionego Antigravity IDE (language_server.exe musi nasłuchiwać).
 //! Provider automatycznie wykrywa port i CSRF token.
 //!
-//! 32 modele: Gemini 3.x, Claude 4.6, GPT-OSS — wszystkie darmowe (free-tier).
+//! Protokół: Connect streaming (application/connect+json) z 5-bajtowym framingiem.
+//! Schema wyekstrahowana z proto descriptorów w language_server.exe + main.js:
+//!   - HandleStreamingCommandRequest: metadata, document{absoluteUri}, requestedModelId (Model enum), commandText, requestSource (CommandRequestSource enum)
+//!   - HandleStreamingCommandResponse: completionId, promptId, diff{lines[{text,type}]}, rawText, trajectory
+//!   - Document: absoluteUri (field 12), text, editorLanguage, cursorPosition, visibleRange
+//!   - Model enum: MODEL_CHAT_20706=235, MODEL_PLACEHOLDER_M26=1026 (Claude Opus 4.6), etc.
+//!   - CommandRequestSource: COMMAND_REQUEST_SOURCE_CASCADE_CHAT=16
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -28,8 +34,12 @@ pub struct AntigravityModel {
     pub max_tokens: Option<u64>,
     #[serde(rename = "modelProvider", default)]
     pub model_provider: Option<String>,
+    /// Nazwa enum modelu z proto (np. "MODEL_CHAT_20706", "MODEL_PLACEHOLDER_M26")
     #[serde(rename = "model", default)]
     pub model_enum: Option<String>,
+    /// Wartość liczbowa enum modelu (np. 235 dla MODEL_CHAT_20706, 1026 dla MODEL_PLACEHOLDER_M26)
+    /// Mapowana przez model_enum_name_to_int()
+    pub model_enum_value: u32,
 }
 
 /// Odpowiedź z GetAvailableModels
@@ -120,12 +130,19 @@ impl AntigravityProvider {
                 continue;
             }
 
+            // Mapuj nazwę enum (np. "MODEL_CHAT_20706") na wartość liczbową (235)
+            let model_enum_value = model_enum
+                .as_deref()
+                .map(model_enum_name_to_int)
+                .unwrap_or(0);
+
             models.push(AntigravityModel {
                 id,
                 display_name,
                 max_tokens,
                 model_provider,
                 model_enum,
+                model_enum_value,
             });
         }
 
@@ -199,27 +216,29 @@ impl AntigravityProvider {
         parse_grpc_web_frame(&bytes)
     }
 
-    /// Wywołanie gRPC-Web z binary protobuf body (dla HandleStreamingCommand)
-    async fn grpc_web_proto_stream(
+    /// Wywołanie Connect streaming (application/connect+json) z JSON body.
+    /// Dla server-streaming RPC jak HandleStreamingCommand.
+    /// Framing: 1 byte flags (0x00) + 4 bytes big-endian length + JSON message.
+    async fn connect_stream(
         &self,
         method: &str,
-        proto_body: Vec<u8>,
+        json_body: serde_json::Value,
     ) -> Result<reqwest::Response> {
         let url = format!("https://127.0.0.1:{}/{}/{}", self.port, SERVICE, method);
+        let json_bytes = serde_json::to_vec(&json_body)?;
 
-        // gRPC-Web framing
-        let mut frame = Vec::with_capacity(5 + proto_body.len());
-        frame.push(0x00);
-        frame.extend_from_slice(&(proto_body.len() as u32).to_be_bytes());
-        frame.extend_from_slice(&proto_body);
+        // Connect streaming framing: 1 byte flags + 4 bytes BE length + message
+        let mut frame = Vec::with_capacity(5 + json_bytes.len());
+        frame.push(0x00); // no compression, not end-of-stream
+        frame.extend_from_slice(&(json_bytes.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&json_bytes);
 
         let resp = self
             .client
             .post(&url)
-            .header("content-type", "application/grpc-web+proto")
+            .header("content-type", "application/connect+json")
             .header("x-codeium-csrf-token", &self.csrf_token)
-            .header("x-grpc-web", "1")
-            .header("x-user-agent", "CONNECT_ES_USER_AGENT")
+            .header("connect-protocol-version", "1")
             .body(frame)
             .send()
             .await?;
@@ -240,13 +259,26 @@ impl Provider for AntigravityProvider {
         messages: &[ChatMessage],
         token_tx: Sender<String>,
     ) -> Result<()> {
-        // Mapuj model ID na enum modelu
+        // Mapuj model ID na enum wartość
         let models = self.get_available_models().await?;
-        let model_enum = models
+        // Strip "antigravity-" prefix (z dynamic discovery: "antigravity-MODEL_CHAT_20706")
+        let clean_model = model.strip_prefix("antigravity-").unwrap_or(model);
+        let model_info = models
             .iter()
-            .find(|m| m.id == model || m.display_name.as_deref() == Some(model))
-            .and_then(|m| m.model_enum.clone())
+            .find(|m| {
+                m.id == clean_model
+                    || m.id == model
+                    || m.display_name.as_deref() == Some(model)
+                    || m.display_name.as_deref() == Some(clean_model)
+                    || m.model_enum.as_deref() == Some(clean_model)
+                    || m.model_enum.as_deref() == Some(model)
+            })
             .ok_or_else(|| anyhow!("Model '{}' nie znaleziony w Antigravity. Dostępne: {}", model, models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>().join(", ")))?;
+
+        let model_enum_value = model_info.model_enum_value;
+        if model_enum_value == 0 {
+            bail!("Model '{}' ma nieznany enum value (model_enum: {:?})", model, model_info.model_enum);
+        }
 
         // Zbuduj prompt z messages (ostatnia user message = commandText)
         let prompt = messages
@@ -260,11 +292,11 @@ impl Provider for AntigravityProvider {
             bail!("Brak promptu (ostatnia user message jest pusta)");
         }
 
-        // Zbuduj protobuf HandleStreamingCommandRequest
-        let proto_body = build_streaming_command_request(&model_enum, &prompt);
+        // Zbuduj JSON HandleStreamingCommandRequest (Connect streaming)
+        let request = build_streaming_command_json(model_enum_value, &prompt);
 
-        // Wyślij żądanie streaming
-        let resp = self.grpc_web_proto_stream("HandleStreamingCommand", proto_body).await?;
+        // Wyślij żądanie streaming przez Connect protocol
+        let resp = self.connect_stream("HandleStreamingCommand", request).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -272,23 +304,7 @@ impl Provider for AntigravityProvider {
             bail!("HTTP {}: {}", status, &body[..body.len().min(300)]);
         }
 
-        // Sprawdź grpc-status w headers
-        let grpc_status = resp
-            .headers()
-            .get("grpc-status")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let grpc_msg = resp
-            .headers()
-            .get("grpc-message")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        if !grpc_status.is_empty() && grpc_status != "0" {
-            bail!("gRPC status {}: {}", grpc_status, grpc_msg);
-        }
-
-        // Stream odpowiedzi — czytaj gRPC-Web frames i wyodrębnij tekst
+        // Stream odpowiedzi — czytaj Connect streaming frames (JSON)
         use futures_util::StreamExt;
         let mut stream = resp.bytes_stream();
         let mut buffer = Vec::new();
@@ -297,18 +313,40 @@ impl Provider for AntigravityProvider {
             let chunk = chunk_result?;
             buffer.extend_from_slice(&chunk);
 
-            // Parsuj wszystkie kompletne frames z buffer
+            // Parsuj wszystkie kompletne Connect frames z buffer
+            // Frame format: 1 byte flags + 4 bytes BE length + JSON data
             while buffer.len() >= 5 {
+                let flags = buffer[0];
                 let msg_len = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]) as usize;
                 if buffer.len() < 5 + msg_len {
                     break; // niekompletny frame, czekaj na więcej danych
                 }
 
                 let msg_data = &buffer[5..5 + msg_len];
-                // Wyciągnij tekst z protobuf response
-                if let Some(text) = extract_text_from_proto(msg_data) {
-                    if !text.is_empty() {
-                        token_tx.send(text).await.ok();
+
+                // Sprawdź czy to error frame (flags bit 1 = 0x02)
+                if flags & 0x02 != 0 {
+                    // Error frame lub end-of-stream — sprawdź czy ma error
+                    if let Ok(err_resp) = serde_json::from_slice::<serde_json::Value>(msg_data) {
+                        if let Some(error) = err_resp.get("error") {
+                            let code = error.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                            if !msg.is_empty() {
+                                bail!("Antigravity error ({}): {}", code, msg);
+                            }
+                        }
+                    }
+                    // End-of-stream bez error — OK
+                    buffer.drain(..5 + msg_len);
+                    continue;
+                }
+
+                // Normal data frame — wyodrębnij tekst z JSON response
+                if let Ok(resp_json) = serde_json::from_slice::<serde_json::Value>(msg_data) {
+                    if let Some(text) = extract_text_from_connect_response(&resp_json) {
+                        if !text.is_empty() {
+                            token_tx.send(text).await.ok();
+                        }
                     }
                 }
 
@@ -321,136 +359,86 @@ impl Provider for AntigravityProvider {
     }
 }
 
-// ─── Protobuf encoding helpers ──────────────────────────────────────
+// ─── Connect JSON request/response helpers ──────────────────────────
 
-fn encode_varint(value: u32) -> Vec<u8> {
-    let mut result = Vec::new();
-    let mut v = value;
-    while v > 127 {
-        result.push((v & 0x7F) as u8 | 0x80);
-        v >>= 7;
-    }
-    result.push(v as u8 & 0x7F);
-    result
-}
+/// Buduje HandleStreamingCommandRequest jako JSON (Connect streaming)
+/// Schema z proto descriptor:
+///   field 1: metadata (Metadata message)
+///   field 2: document (Document message z absoluteUri)
+///   field 4: requestedModelId (Model enum jako liczba)
+///   field 8: commandText (string)
+///   field 9: requestSource (CommandRequestSource enum, 16 = CASCADE_CHAT)
+fn build_streaming_command_json(model_enum_value: u32, prompt: &str) -> serde_json::Value {
+    let request_id = uuid::Uuid::new_v4().to_string();
 
-fn encode_field_string(field_num: u32, value: &str) -> Vec<u8> {
-    let tag = (field_num << 3) | 2; // wire type 2 (length-delimited)
-    let data = value.as_bytes();
-    let mut result = encode_varint(tag);
-    result.extend(encode_varint(data.len() as u32));
-    result.extend_from_slice(data);
-    result
-}
-
-fn encode_field_varint(field_num: u32, value: u32) -> Vec<u8> {
-    let tag = (field_num << 3) | 0; // wire type 0 (varint)
-    let mut result = encode_varint(tag);
-    result.extend(encode_varint(value));
-    result
-}
-
-fn encode_field_message(field_num: u32, message: &[u8]) -> Vec<u8> {
-    let tag = (field_num << 3) | 2; // wire type 2
-    let mut result = encode_varint(tag);
-    result.extend(encode_varint(message.len() as u32));
-    result.extend_from_slice(message);
-    result
-}
-
-/// Buduje HandleStreamingCommandRequest jako binary protobuf
-fn build_streaming_command_request(model_enum: &str, prompt: &str) -> Vec<u8> {
-    // Metadata message (field 1)
-    let mut metadata = Vec::new();
-    metadata.extend(encode_field_string(3, &uuid::Uuid::new_v4().to_string())); // request_id
-    metadata.extend(encode_field_string(5, "antigravity")); // ide_name
-    metadata.extend(encode_field_string(6, "2.12.0")); // ide_version
-    metadata.extend(encode_field_string(7, "antigravity")); // extension_name
-    metadata.extend(encode_field_string(8, "2.12.0")); // extension_version
-
-    // Document message (field 2) — użyj aktualnego pliku z forward slashes
+    // Ścieżka pliku jako URI (Connect wymaga absoluteUri, nie absolutePath)
     let current_file = std::env::current_dir()
         .map(|d| d.join("antigravity_chat.txt"))
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| "C:/tmp/antigravity_chat.txt".to_string());
-    let document = encode_field_string(1, &current_file); // absolute_path
+    let file_uri = format!("file:///{}", current_file);
 
-    // HandleStreamingCommandRequest
-    let mut request = Vec::new();
-    request.extend(encode_field_message(1, &metadata)); // metadata
-    request.extend(encode_field_message(2, &document)); // document
-    // requested_model_id (field 4) — Model enum jako varint
-    // Mapujemy nazwę modelu na enum value (heurystyka)
-    let model_val = model_enum_to_int(model_enum);
-    if model_val > 0 {
-        request.extend(encode_field_varint(4, model_val));
-    }
-    request.extend(encode_field_varint(6, 0)); // selection_start_line
-    request.extend(encode_field_varint(7, 0)); // selection_end_line
-    request.extend(encode_field_string(8, prompt)); // command_text
-    request.extend(encode_field_varint(9, 16)); // request_source = CASCADE_CHAT
-
-    request
+    serde_json::json!({
+        "metadata": {
+            "requestId": request_id,
+            "ideName": "antigravity",
+            "ideVersion": "1.0.0",
+            "extensionName": "antigravity",
+            "extensionVersion": "1.0.0"
+        },
+        "document": {
+            "absoluteUri": file_uri,
+            "text": ""
+        },
+        "requestedModelId": model_enum_value,
+        "commandText": prompt,
+        "requestSource": 16  // COMMAND_REQUEST_SOURCE_CASCADE_CHAT
+    })
 }
 
-/// Mapuje nazwę modelu (MODEL_CHAT_20706 etc.) na wartość enum.
-/// TODO: znaleźć dokładne wartości enum z proto descriptor.
-/// Na razie używamy heurystyki — wartości mogą być niepoprawne.
-fn model_enum_to_int(model_enum: &str) -> u32 {
-    // Wyciągnij liczbę z nazwy (np. MODEL_CHAT_20706 → 20706)
-    let num: Option<u32> = model_enum
-        .split('_')
-        .filter_map(|s| s.parse().ok())
-        .next();
-    num.unwrap_or(0)
-}
-
-/// Wyciąga tekst z protobuf HandleStreamingCommandResponse
-fn extract_text_from_proto(data: &[u8]) -> Option<String> {
-    let mut offset = 0;
+/// Wyciąga tekst z Connect streaming JSON response (HandleStreamingCommandResponse)
+/// Schema:
+///   field 3: diff (UnifiedDiff z lines[{text, type}])
+///   field 16: rawText (string — pełny tekst odpowiedzi)
+///   field 15: trajectory (Trajectory — może zawierać wiadomości)
+fn extract_text_from_connect_response(resp: &serde_json::Value) -> Option<String> {
     let mut text = String::new();
 
-    while offset < data.len() {
-        // Czytaj tag
-        let (tag, tag_len) = decode_varint(&data[offset..])?;
-        offset += tag_len;
+    // 1. Sprawdź rawText (field 16) — pełny tekst odpowiedzi
+    if let Some(raw) = resp.get("rawText").and_then(|v| v.as_str()) {
+        if !raw.is_empty() {
+            return Some(raw.to_string());
+        }
+    }
 
-        let field_num = (tag >> 3) as u32;
-        let wire_type = (tag & 0x07) as u8;
-
-        match wire_type {
-            0 => {
-                // varint
-                let (_, len) = decode_varint(&data[offset..])?;
-                offset += len;
-            }
-            2 => {
-                // length-delimited
-                let (len, len_size) = decode_varint(&data[offset..])?;
-                offset += len_size;
-                let end = offset + len as usize;
-                if end > data.len() {
-                    return None;
+    // 2. Sprawdź diff.lines (field 3) — wyodrębnij INSERT lines
+    if let Some(diff) = resp.get("diff") {
+        if let Some(lines) = diff.get("lines").and_then(|v| v.as_array()) {
+            for line in lines {
+                let line_text = line.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let line_type = line.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                // INSERT lines = wygenerowany tekst
+                if line_type.contains("INSERT") {
+                    text.push_str(line_text);
+                    text.push('\n');
                 }
-                let field_data = &data[offset..end];
-                offset = end;
+            }
+        }
+    }
 
-                // Pole 1 = completion_id (string), pole 2 = prompt_id (string)
-                // Pole 3 = diff (UnifiedDiff message)
-                // W diff: pole 1 = lines (repeated string)
-                // Szukaj string fields które wyglądają jak tekst odpowiedzi
-                if field_num == 3 {
-                    // Diff message — szukaj tekstu wewnątrz
-                    if let Some(diff_text) = extract_text_from_diff(field_data) {
-                        text.push_str(&diff_text);
+    // 3. Sprawdź trajectory (field 15) — może zawierać wiadomości asystenta
+    if text.is_empty() {
+        if let Some(traj) = resp.get("trajectory") {
+            if let Some(messages) = traj.get("messages").and_then(|v| v.as_array()) {
+                for msg in messages {
+                    let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                    if role == "assistant" || role.to_lowercase().contains("model") {
+                        if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+                            text.push_str(content);
+                            text.push('\n');
+                        }
                     }
-                } else if field_num == 1 || field_num == 2 {
-                    // completion_id / prompt_id — pomiń
                 }
-            }
-            _ => {
-                // Inne wire types — pomiń
-                return if text.is_empty() { None } else { Some(text) };
             }
         }
     }
@@ -462,66 +450,53 @@ fn extract_text_from_proto(data: &[u8]) -> Option<String> {
     }
 }
 
-/// Wyciąga tekst z Diff message (pole 3 = repeated string lines)
-fn extract_text_from_diff(data: &[u8]) -> Option<String> {
-    let mut offset = 0;
-    let mut lines = Vec::new();
+/// Mapuje nazwę enum modelu (z GetAvailableModels `model` field) na wartość liczbową.
+/// Wartości wyekstrahowane z proto descriptor codeium_common_pb:
+///   MODEL_CHAT_20706 = 235, MODEL_CHAT_23310 = 269
+///   MODEL_GOOGLE_GEMINI_2_5_FLASH = 312, MODEL_GOOGLE_GEMINI_2_5_PRO = 246
+///   MODEL_CLAUDE_4_SONNET = 281, MODEL_CLAUDE_4_OPUS = 290
+///   MODEL_PLACEHOLDER_M{N} = 1000 + N
+fn model_enum_name_to_int(name: &str) -> u32 {
+    // Hardcoded wartości dla znanych modeli (z proto descriptor)
+    let hardcoded: &[(&str, u32)] = &[
+        ("MODEL_CHAT_20706", 235),
+        ("MODEL_CHAT_23310", 269),
+        ("MODEL_GOOGLE_GEMINI_2_5_FLASH", 312),
+        ("MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING", 313),
+        ("MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING_TOOLS", 329),
+        ("MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE", 330),
+        ("MODEL_GOOGLE_GEMINI_2_5_PRO", 246),
+        ("MODEL_GOOGLE_GEMINI_2_5_PRO_EVAL", 331),
+        ("MODEL_GOOGLE_GEMINI_FOR_GOOGLE_2_5_PRO", 327),
+        ("MODEL_GOOGLE_GEMINI_2_5_FLASH_IMAGE_PREVIEW", 332),
+        ("MODEL_GOOGLE_GEMINI_COMPUTER_USE_EXPERIMENTAL", 335),
+        ("MODEL_CLAUDE_4_SONNET", 281),
+        ("MODEL_CLAUDE_4_SONNET_THINKING", 282),
+        ("MODEL_CLAUDE_4_OPUS", 290),
+        ("MODEL_CLAUDE_4_OPUS_THINKING", 291),
+        ("MODEL_CLAUDE_4_5_SONNET", 333),
+        ("MODEL_CLAUDE_4_5_SONNET_THINKING", 334),
+        ("MODEL_CLAUDE_4_5_HAIKU", 340),
+        ("MODEL_CLAUDE_4_5_HAIKU_THINKING", 341),
+        ("MODEL_OPENAI_GPT_OSS_120B_MEDIUM", 342),
+    ];
 
-    while offset < data.len() {
-        let (tag, tag_len) = decode_varint(&data[offset..])?;
-        offset += tag_len;
-
-        let field_num = (tag >> 3) as u32;
-        let wire_type = (tag & 0x07) as u8;
-
-        match wire_type {
-            0 => {
-                let (_, len) = decode_varint(&data[offset..])?;
-                offset += len;
-            }
-            2 => {
-                let (len, len_size) = decode_varint(&data[offset..])?;
-                offset += len_size;
-                let end = offset + len as usize;
-                if end > data.len() {
-                    return None;
-                }
-                let field_data = &data[offset..end];
-                offset = end;
-
-                // Pole 1 = lines (repeated string)
-                if field_num == 1 {
-                    if let Ok(s) = std::str::from_utf8(field_data) {
-                        lines.push(s.to_string());
-                    }
-                }
-            }
-            _ => break,
+    // Sprawdź hardcoded wartości
+    for (n, v) in hardcoded {
+        if name == *n {
+            return *v;
         }
     }
 
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines.join("\n"))
+    // MODEL_PLACEHOLDER_M{N} → 1000 + N
+    if let Some(suffix) = name.strip_prefix("MODEL_PLACEHOLDER_M") {
+        if let Ok(n) = suffix.parse::<u32>() {
+            return 1000 + n;
+        }
     }
-}
 
-/// Dekoduje varint z bytes, zwraca (wartość, liczba bajtów)
-fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
-    let mut result: u64 = 0;
-    let mut shift = 0;
-    for (i, &byte) in data.iter().enumerate() {
-        result |= ((byte & 0x7F) as u64) << shift;
-        if byte & 0x80 == 0 {
-            return Some((result, i + 1));
-        }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
-    }
-    None
+    // Nieznany model — zwróć 0 (będzie odrzucony w stream_chat)
+    0
 }
 
 /// Parsuje gRPC-Web frame z odpowiedzi (pojedyncza wiadomość)
@@ -778,31 +753,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_encode_varint() {
-        assert_eq!(encode_varint(0), vec![0x00]);
-        assert_eq!(encode_varint(1), vec![0x01]);
-        assert_eq!(encode_varint(127), vec![0x7F]);
-        assert_eq!(encode_varint(128), vec![0x80, 0x01]);
-        assert_eq!(encode_varint(300), vec![0xAC, 0x02]);
-    }
-
-    #[test]
-    fn test_encode_field_string() {
-        let result = encode_field_string(1, "hello");
-        // tag = (1 << 3) | 2 = 10, length = 5, data = "hello"
-        assert_eq!(result, vec![0x0A, 0x05, b'h', b'e', b'l', b'l', b'o']);
-    }
-
-    #[test]
-    fn test_decode_varint() {
-        assert_eq!(decode_varint(&[0x00]), Some((0, 1)));
-        assert_eq!(decode_varint(&[0x01]), Some((1, 1)));
-        assert_eq!(decode_varint(&[0x7F]), Some((127, 1)));
-        assert_eq!(decode_varint(&[0x80, 0x01]), Some((128, 2)));
-        assert_eq!(decode_varint(&[0xAC, 0x02]), Some((300, 2)));
-    }
-
-    #[test]
     fn test_parse_grpc_web_frame() {
         // Empty message
         let frame = vec![0x00, 0x00, 0x00, 0x00, 0x00];
@@ -815,22 +765,65 @@ mod tests {
     }
 
     #[test]
-    fn test_build_streaming_command_request() {
-        let request = build_streaming_command_request("MODEL_CHAT_20706", "Say hello");
+    fn test_build_streaming_command_json() {
+        let request = build_streaming_command_json(1026, "Say hello");
         // Powinien zawierać commandText "Say hello"
-        let prompt_str = "Say hello";
-        assert!(request
-            .windows(prompt_str.len())
-            .any(|w| w == prompt_str.as_bytes()));
-        // Powinien zawierać CASCADE_CHAT (16) jako varint
-        assert!(request.contains(&16u8));
+        assert_eq!(request["commandText"], "Say hello");
+        // Powinien zawierać requestedModelId 1026
+        assert_eq!(request["requestedModelId"], 1026);
+        // Powinien zawierać requestSource 16 (CASCADE_CHAT)
+        assert_eq!(request["requestSource"], 16);
+        // Powinien zawierać document z absoluteUri
+        assert!(request["document"]["absoluteUri"].as_str().unwrap().starts_with("file:///"));
     }
 
     #[test]
-    fn test_model_enum_to_int() {
-        assert_eq!(model_enum_to_int("MODEL_CHAT_20706"), 20706);
-        assert_eq!(model_enum_to_int("MODEL_CHAT_23310"), 23310);
-        assert_eq!(model_enum_to_int("unknown"), 0);
+    fn test_model_enum_name_to_int() {
+        // Znane modele z proto descriptor
+        assert_eq!(model_enum_name_to_int("MODEL_CHAT_20706"), 235);
+        assert_eq!(model_enum_name_to_int("MODEL_CHAT_23310"), 269);
+        assert_eq!(model_enum_name_to_int("MODEL_GOOGLE_GEMINI_2_5_FLASH"), 312);
+        assert_eq!(model_enum_name_to_int("MODEL_CLAUDE_4_SONNET"), 281);
+        assert_eq!(model_enum_name_to_int("MODEL_CLAUDE_4_OPUS"), 290);
+        // Placeholder modele: MODEL_PLACEHOLDER_M{N} → 1000 + N
+        assert_eq!(model_enum_name_to_int("MODEL_PLACEHOLDER_M26"), 1026);
+        assert_eq!(model_enum_name_to_int("MODEL_PLACEHOLDER_M0"), 1000);
+        assert_eq!(model_enum_name_to_int("MODEL_PLACEHOLDER_M100"), 1100);
+        // Nieznany model → 0
+        assert_eq!(model_enum_name_to_int("unknown"), 0);
+    }
+
+    #[test]
+    fn test_extract_text_from_connect_response_raw_text() {
+        let resp = serde_json::json!({
+            "rawText": "Hello from Antigravity!"
+        });
+        assert_eq!(
+            extract_text_from_connect_response(&resp),
+            Some("Hello from Antigravity!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_text_from_connect_response_diff() {
+        let resp = serde_json::json!({
+            "diff": {
+                "lines": [
+                    {"text": "hello", "type": "UNIFIED_DIFF_LINE_TYPE_UNCHANGED"},
+                    {"text": "hi there", "type": "UNIFIED_DIFF_LINE_TYPE_INSERT"}
+                ]
+            }
+        });
+        assert_eq!(
+            extract_text_from_connect_response(&resp),
+            Some("hi there\n".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_text_from_connect_response_empty() {
+        let resp = serde_json::json!({});
+        assert_eq!(extract_text_from_connect_response(&resp), None);
     }
 
     #[test]

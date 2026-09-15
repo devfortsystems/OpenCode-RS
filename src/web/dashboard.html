@@ -115,6 +115,34 @@
       transition: all 0.2s;
     }
     button:hover { opacity: 0.9; transform: translateY(-1px); }
+
+    /* Dropzone */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: rgba(99, 102, 241, 0.05);
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.15);
+      box-shadow: 0 0 20px var(--primary-glow);
+    }
+    .dropzone-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+    .dropzone-text { color: var(--text-muted); font-size: 0.95rem; }
+    .dropzone-text b { color: var(--text); }
+    .upload-list { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .upload-chip {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 6px;
+      padding: 0.3rem 0.6rem;
+      font-size: 0.8rem;
+      color: var(--assistant);
+    }
   </style>
 </head>
 <body>
@@ -156,6 +184,16 @@
       <input type="text" id="prompt-input" placeholder="Wpisz zadanie lub komendę (np. /review, /tests, /branch, /wsl)..." onkeypress="if(event.key==='Enter') sendPrompt()">
       <button onclick="sendPrompt()">Wyślij</button>
     </div>
+
+    <div class="card">
+      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
+        <div class="dropzone-icon">📁</div>
+        <div class="dropzone-text"><b>Przeciągnij i upuść pliki tutaj</b> lub kliknij aby wybrać</div>
+        <div class="dropzone-text" style="margin-top:0.3rem;font-size:0.8rem">Pliki trafią do ~/.opencode/dropzone/ — użyj <b>/dropzone</b> w terminalu aby dołączyć do czatu</div>
+        <input type="file" id="file-input" multiple style="display:none" onchange="uploadFiles(this.files)">
+        <div class="upload-list" id="upload-list"></div>
+      </div>
+    </div>
   </main>
 
   <script>
@@ -185,6 +223,47 @@
     }
 
     loadStatus();
+
+    // Drag & drop upload
+    const dz = document.getElementById('dropzone');
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', e => { e.preventDefault(); dz.classList.remove('dragover'); });
+    dz.addEventListener('drop', e => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+      uploadFiles(e.dataTransfer.files);
+    });
+
+    async function uploadFiles(files) {
+      if (!files || files.length === 0) return;
+      const list = document.getElementById('upload-list');
+      const formData = new FormData();
+      for (const f of files) {
+        formData.append('files', f, f.name);
+        const chip = document.createElement('div');
+        chip.className = 'upload-chip';
+        chip.innerText = '⏳ ' + f.name;
+        list.appendChild(chip);
+      }
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        list.innerHTML = '';
+        if (data.status === 'ok') {
+          for (const f of files) {
+            const chip = document.createElement('div');
+            chip.className = 'upload-chip';
+            chip.innerText = '✅ ' + f.name;
+            list.appendChild(chip);
+          }
+        } else {
+          alert('Upload błąd: ' + data.message);
+        }
+      } catch (e) {
+        list.innerHTML = '';
+        alert('Upload błąd: ' + e.message);
+      }
+    }
   </script>
 </body>
 </html>

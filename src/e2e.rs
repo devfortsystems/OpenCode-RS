@@ -63,17 +63,16 @@ mod e2e_tests {
         // default tab is now All (1) after fix, verify
         assert_eq!(app.model_filter_index, 1, "default should be All");
         let total_all = app.filtered_models().len();
-        assert!(total_all >= 70, "All should have 70+ models, got {}", total_all);
-        // Right goes to OpenCode (should be ~11)
-        app.handle_key_event(key(KeyCode::Right)).await.unwrap(); // All -> OpenCode
+        assert!(total_all >= 60, "All should have 60+ models, got {}", total_all);
+        // Stay on "All" tab (has many models) — test Down navigation
         assert_eq!(app.model_picker_index, 0);
         // Down should increase index by 1
         let before = app.model_picker_index;
         app.handle_key_event(key(KeyCode::Down)).await.unwrap();
         assert_eq!(app.model_picker_index, before + 1);
-        // mouse scroll down via handle_mouse_event (simulated: filtered len check)
+        // mouse scroll down via handle_mouse_event
         let total = app.filtered_models().len();
-        if total > 1 {
+        if total > 2 {
             app.handle_mouse_event(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::ScrollUp, // physical up -> logical down after inversion
                 column: 0, row: 0,

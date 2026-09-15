@@ -60,11 +60,9 @@ pub struct ProviderRouter {
     devin_acp_opus: Arc<AcpClientProvider>,
     devin_acp_sonnet: Arc<AcpClientProvider>,
     devin_acp_codex: Arc<AcpClientProvider>,
-    // OpenCode ACP (oryginalny opencode v1.18.21, 127 modeli w tym darmowe).
+    // OpenCode ACP (oryginalny opencode v1.18.29+, 127+ modeli w tym darmowe).
     // Nie wymaga wtyczki — to CLI (`opencode acp`), nie bridge.
     opencode_acp: Arc<AcpClientProvider>,
-    opencode_acp_free: Arc<AcpClientProvider>,
-    opencode_acp_go: Arc<AcpClientProvider>,
     // Gemini CLI ACP (darmowy tier 60 req/min, wymaga `gemini` login).
     gemini_acp: Arc<AcpClientProvider>,
     // Claude Code ACP (wymaga ANTHROPIC_API_KEY lub Claude Pro/Max).
@@ -168,17 +166,10 @@ impl ProviderRouter {
         let devin_acp_sonnet = Arc::new(AcpClientProvider::devin(Some("sonnet"), work_dir.clone()));
         let devin_acp_codex = Arc::new(AcpClientProvider::devin(Some("codex"), work_dir.clone()));
 
-        // OpenCode ACP (oryginalny opencode) — 127 modeli, w tym darmowe.
+        // OpenCode ACP (oryginalny opencode) — 131 modeli wykrywanych dynamicznie.
         // Nie wymaga wtyczki — to CLI. Model przez env var OPENCODE_MODEL.
+        // Dynamiczne modele (opencode-acp/<model>) tworzą nowy provider na żądanie.
         let opencode_acp = Arc::new(AcpClientProvider::opencode(None, work_dir.clone()));
-        let opencode_acp_free = Arc::new(AcpClientProvider::opencode(
-            Some("opencode/ling-3.0-flash-fin-free"),
-            work_dir.clone(),
-        ));
-        let opencode_acp_go = Arc::new(AcpClientProvider::opencode(
-            Some("opencode-go/glm-5.2"),
-            work_dir.clone(),
-        ));
 
         // Gemini CLI ACP — darmowy tier (60 req/min, 1000/day), wymaga `gemini` login.
         let gemini_acp = Arc::new(AcpClientProvider::gemini(work_dir.clone()));
@@ -242,8 +233,6 @@ impl ProviderRouter {
             devin_acp_sonnet,
             devin_acp_codex,
             opencode_acp,
-            opencode_acp_free,
-            opencode_acp_go,
             gemini_acp,
             claude_code_acp,
             codex_acp,
@@ -266,41 +255,9 @@ impl ProviderRouter {
 
     pub fn get_available_models(&self) -> Vec<(&'static str, &'static str, &'static str)> {
         vec![
-            // ⚡ OpenCode Native Ecosystem
-            ("opencode-zen", "OpenCode Zen (Claude 3.7 Hybrid & Thinking)", "opencode"),
-            ("opencode-go", "OpenCode Go (Fast & Lightweight)", "opencode"),
-            ("opencode-flash", "OpenCode Flash 3.7 (Instant)", "opencode"),
-            ("opencode-pro", "OpenCode Pro (Deep Reasoning)", "opencode"),
-            ("opencode-claude-3-7-sonnet", "Claude 3.7 Sonnet (OpenCode Native)", "opencode"),
-            ("opencode-claude-3-5-sonnet", "Claude 3.5 Sonnet (OpenCode Native)", "opencode"),
-            ("opencode-gpt-4o", "GPT-4o Omnimodal (OpenCode Native)", "opencode"),
-            ("opencode-o3-mini", "o3-mini High Reasoning (OpenCode Native)", "opencode"),
-            ("opencode-deepseek-r1", "DeepSeek R1 Full Reasoning (OpenCode)", "opencode"),
-            ("opencode-gemini-3-7-pro", "Gemini 3.7 Pro (OpenCode Native)", "opencode"),
-            ("opencode-gemini-3-7-flash", "Gemini 3.7 Flash (OpenCode Native)", "opencode"),
-
-            // 🪐 Google Antigravity IDE — gRPC-Web direct (32 modele, free-tier)
-            // Wymaga uruchomionego Antigravity IDE. Modele wykrywane dynamicznie.
-            ("antigravity-gemini-3-1-pro-high", "Gemini 3.1 Pro High (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-1-pro-low", "Gemini 3.1 Pro Low (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-flash", "Gemini 3 Flash (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-flash-agent", "Gemini 3.5 Flash High Agent (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-1-flash-lite", "Gemini 3.1 Flash Lite (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-5-flash-low", "Gemini 3.5 Flash Low (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-6-flash-high", "Gemini 3.6 Flash High (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-6-flash-medium", "Gemini 3.6 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-6-flash-low", "Gemini 3.6 Flash Low (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-7-flash-high", "Gemini 3.7 Flash High (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-7-flash-medium", "Gemini 3.7 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-7-flash-low", "Gemini 3.7 Flash Low (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-8-flash-high", "Gemini 3.8 Flash High (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-8-flash-medium", "Gemini 3.8 Flash Medium (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-3-8-flash-low", "Gemini 3.8 Flash Low (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-2-5-pro", "Gemini 2.5 Pro (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gemini-2-5-flash", "Gemini 3.1 Flash Lite (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-claude-sonnet-4-6", "Claude Sonnet 4.6 Thinking (Antigravity, DARMOWY)", "antigravity"),
-            ("antigravity-gpt-oss-120b-medium", "GPT-OSS 120B Medium (Antigravity, DARMOWY)", "antigravity"),
+            // 🪐 Google Antigravity IDE — gRPC-Web direct, modele wykrywane dynamicznie
+            // Wymaga uruchomionego Antigravity IDE. Statyczne modele usunięte — discovery używa language_server.exe.
+            // Zobacz `opencode-rs models antigravity` dla aktualnej listy.
 
             // 🎯 Trae AI — realne modele z docs.trae.ai (Claude usunięty 11.2025, teraz Seed/Kimi/MiniMax/Gemini/GPT-5)
             // wildcard: każdy `trae-*` → Bridge (np. przyszły Seed-2.5 zadziała bez zmiany kodu)
@@ -343,16 +300,15 @@ impl ProviderRouter {
             // 🤝 Agenci-CLI jako subprocess (opencode-rs jako meta-agent deleguje zadania)
             // Każdy model = uruchomienie agenta-CLI w trybie non-interactive (-p / --message).
             // Modele z sufiksem (-opus, -sonnet) przekazują model do CLI przez --model flag.
-            ("devin-cli", "Devin CLI (Subprocess, domyślny model)", "devin-cli"),
-            ("devin-cli-opus", "Devin CLI → Claude Opus (Subprocess)", "devin-cli"),
-            ("devin-cli-sonnet", "Devin CLI → Claude Sonnet (Subprocess)", "devin-cli"),
-            ("devin-cli-codex", "Devin CLI → Codex (Subprocess)", "devin-cli"),
-            ("claude-code-cli", "Claude Code CLI (Subprocess, domyślny)", "devin-cli"),
-            ("claude-code-cli-sonnet", "Claude Code CLI → Sonnet (Subprocess)", "devin-cli"),
-            ("claude-code-cli-opus", "Claude Code CLI → Opus (Subprocess)", "devin-cli"),
-            ("aider-cli", "Aider CLI (Subprocess, domyślny model)", "devin-cli"),
-            ("gemini-cli", "Gemini CLI (Subprocess, domyślny)", "devin-cli"),
-            ("codex-cli", "Codex CLI (Subprocess)", "devin-cli"),
+            ("devin-cli", "Devin CLI (domyślny model)", "devin-cli"),
+            // Dynamiczne modele: devin-cli/<model_uid> (np. devin-cli/claude-opus-5-medium)
+            // Wykrywane z `devin models list` — 46 rodzin, 100+ modeli
+            ("claude-code-cli", "Claude Code CLI (Subprocess, domyślny)", "claude-code-cli"),
+            ("claude-code-cli-sonnet", "Claude Code CLI → Sonnet (Subprocess)", "claude-code-cli"),
+            ("claude-code-cli-opus", "Claude Code CLI → Opus (Subprocess)", "claude-code-cli"),
+            ("aider-cli", "Aider CLI (Subprocess, domyślny model)", "aider-cli"),
+            ("gemini-cli", "Gemini CLI (Subprocess, domyślny)", "gemini-cli"),
+            ("codex-cli", "Codex CLI (Subprocess)", "codex-cli"),
 
             // ☁️ Devin Cloud (api.devin.ai v3) — sesje w chmurze (pełny VM, shell, browser)
             // Wymaga DEVIN_API_KEY + DEVIN_ORG_ID. devin_mode = tryb agenta.
@@ -369,11 +325,13 @@ impl ProviderRouter {
             ("devin-acp-sonnet", "Devin ACP → Sonnet (JSON-RPC streaming)", "devin-acp"),
             ("devin-acp-codex", "Devin ACP → Codex (JSON-RPC streaming)", "devin-acp"),
 
-            // 🔌 OpenCode ACP (oryginalny opencode v1.18.21, 127 modeli w tym darmowe)
-            // Nie wymaga wtyczki — to CLI (`opencode acp`), nie bridge.
-            ("opencode-acp", "OpenCode ACP (oryginalny, domyślny model)", "opencode-acp"),
-            ("opencode-acp-free", "OpenCode ACP → Ling 3.0 Flash (DARMOWY)", "opencode-acp"),
-            ("opencode-acp-go", "OpenCode ACP → GLM-5.2 (OpenCode Go)", "opencode-acp"),
+            // 🔌 OpenCode ACP (oryginalny opencode v1.18.21, 131 modeli)
+            // Nie wymaga wtyczki — to CLI (`opencode acp`). Modele wykrywane dynamicznie przez `opencode models`.
+            // Wpisz /models lub Ctrl+M aby zobaczyć wszystkie 131 modeli (opencode/, opencode-go/, commandcode/, google/).
+            ("opencode-acp", "OpenCode ACP (domyślny model)", "opencode-acp"),
+            // Skróty do najlepszych modeli opencode:
+            ("opencode-zen", "OpenCode Zen → opencode/big-pickle (najlepszy, darmowy)", "opencode-acp"),
+            ("opencode-go", "OpenCode Go → opencode-go/glm-5.3 (flagship)", "opencode-acp"),
 
             // 🔌 Kilo Code (fork opencode, 302 modele, 17 darmowych) — `kilo run -m <model>`
             // Nie wymaga wtyczki — to CLI. Darmowe: nvidia nemotron, minimax, ling, poolside, etc.
@@ -404,6 +362,12 @@ impl ProviderRouter {
             ("openai/o3-mini", "o3-mini High Reasoning (Direct OpenAI)", "openai"),
             ("openai/o1", "o1 Full Reasoning (Direct OpenAI)", "openai"),
             ("openai/gpt-4o-mini", "GPT-4o Mini Fast (Direct OpenAI)", "openai"),
+
+            // 🧠 Direct Anthropic API
+            ("anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5 (Direct Anthropic)", "anthropic"),
+            ("anthropic/claude-opus-4-1", "Claude Opus 4.1 (Direct Anthropic)", "anthropic"),
+            ("anthropic/claude-3-7-sonnet", "Claude 3.7 Sonnet (Direct Anthropic)", "anthropic"),
+            ("anthropic/claude-3-5-haiku", "Claude 3.5 Haiku Fast (Direct Anthropic)", "anthropic"),
 
             // 🧠 Direct DeepSeek API
             ("deepseek/deepseek-chat", "DeepSeek V3 (Direct DeepSeek API)", "deepseek"),
@@ -507,8 +471,8 @@ impl ProviderRouter {
 
         // ─── Agenci-CLI jako subprocess (meta-agent delegation) ───────────
         // Każdy agent-CLI uruchamiany w trybie non-interactive (-p / --message).
-        // Modele z sufiksem (np. "devin-cli-opus") przekazują model do CLI.
-        if model == "devin-cli" || model.starts_with("devin-cli-") {
+        // Modele z sufiksem (np. "devin-cli-opus" lub "devin-cli/claude-opus-5-medium") przekazują model do CLI.
+        if model == "devin-cli" || model.starts_with("devin-cli-") || model.starts_with("devin-cli/") {
             return self.devin_cli.stream_chat(model, messages, token_tx).await;
         }
         if model == "claude-code-cli" || model.starts_with("claude-code-cli-") {
@@ -555,16 +519,26 @@ impl ProviderRouter {
             return self.devin_acp_codex.stream_chat(model, messages, token_tx).await;
         }
 
-        // ─── OpenCode ACP (oryginalny opencode, 127 modeli) ──────────────
+        // ─── OpenCode ACP (oryginalny opencode, 131 modeli) ─────────────
         // Nie wymaga wtyczki — to CLI. Model przez env var OPENCODE_MODEL.
         if model == "opencode-acp" {
             return self.opencode_acp.stream_chat(model, messages, token_tx).await;
         }
-        if model == "opencode-acp-free" {
-            return self.opencode_acp_free.stream_chat(model, messages, token_tx).await;
+        // Skróty opencode-zen / opencode-go → realne modele przez ACP
+        if model == "opencode-zen" {
+            let provider = AcpClientProvider::opencode(Some("opencode/big-pickle"), self.work_dir.clone());
+            return provider.stream_chat(model, messages, token_tx).await;
         }
-        if model == "opencode-acp-go" {
-            return self.opencode_acp_go.stream_chat(model, messages, token_tx).await;
+        if model == "opencode-go" {
+            let provider = AcpClientProvider::opencode(Some("opencode-go/glm-5.3"), self.work_dir.clone());
+            return provider.stream_chat(model, messages, token_tx).await;
+        }
+        // Dynamiczne modele z `opencode models` — format "opencode-acp/<provider>/<model>"
+        // Np. "opencode-acp/opencode/ling-3.0-flash-fin-free", "opencode-acp/opencode-go/glm-5.2"
+        // Np. "opencode-acp/commandcode/claude-sonnet-5", "opencode-acp/google/gemini-3.7-flash"
+        if let Some(opencode_model) = model.strip_prefix("opencode-acp/") {
+            let provider = AcpClientProvider::opencode(Some(opencode_model), self.work_dir.clone());
+            return provider.stream_chat(model, messages, token_tx).await;
         }
 
         // ─── Kilo Code (fork opencode, 302 modele, 17 darmowych) ─────────
@@ -575,6 +549,14 @@ impl ProviderRouter {
         if model == "kilo-run-free" {
             // Darmowy model: nvidia/nemotron-3.5-lightning:free
             return self.kilo_run_free.stream_chat("kilo/nvidia/nemotron-3.5-lightning:free", messages, token_tx).await;
+        }
+        // Dynamiczne modele z `kilo models` — format "kilo-run/<model>"
+        // Np. "kilo-run/kilo/anthropic/claude-sonnet-latest"
+        if let Some(kilo_model) = model.strip_prefix("kilo-run/") {
+            // Użyj CliSubprocessProvider z dynamicznym modelem
+            let spec = crate::providers::cli_subprocess::CliSpec::kilo_with_model(kilo_model);
+            let provider = crate::providers::cli_subprocess::CliSubprocessProvider::new(spec);
+            return provider.stream_chat(model, messages, token_tx).await;
         }
 
         // ─── Cline CLI ────────────────────────────────────────────────────
@@ -712,8 +694,18 @@ impl ProviderRouter {
         let mut results: Vec<(String, String, String)> = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
-        // 1. Dodaj modele bazowe
+        // 0. Auto-detekcja CLI binary (opencode, devin, gemini, kilo, cline, ...)
+        // Modele CLI pokazują się tylko jeśli binarka jest zainstalowana.
+        let cli_map = Self::detect_cli_providers();
+
+        // 1. Dodaj modele bazowe (filtruj CLI jeśli binarka niedostępna)
         for (id, name, prov) in self.get_available_models() {
+            // Sprawdź czy to model CLI — jeśli tak, czy binarka jest dostępna
+            if let Some(binary) = Self::cli_binary_for_provider(prov) {
+                if !*cli_map.get(binary).unwrap_or(&false) {
+                    continue; // CLI nie zainstalowane — pomiń model
+                }
+            }
             if seen_ids.insert(id.to_string()) {
                 results.push((id.to_string(), name.to_string(), prov.to_string()));
             }
@@ -813,7 +805,165 @@ impl ProviderRouter {
             }
         }
 
+        // 7. Dynamiczne odkrywanie modeli z `opencode models` (127 modeli, w tym darmowe)
+        // Tylko jeśli `opencode` jest na PATH. Modele dodawane jako "opencode-acp/<model>".
+        if *cli_map.get("opencode").unwrap_or(&false) {
+            if let Ok(output) = tokio::process::Command::new("opencode")
+                .arg("models")
+                .output()
+                .await
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let model_id = line.trim();
+                    if model_id.is_empty() || model_id.starts_with('#') { continue; }
+                    // Format: opencode/<model> lub opencode-go/<model>
+                    let full_id = format!("opencode-acp/{model_id}");
+                    if seen_ids.insert(full_id.clone()) {
+                        // Skrócona nazwa wyświetlana — ostatnia część po /
+                        let short_name = model_id.rsplit('/').next().unwrap_or(model_id);
+                        let display = format!("OpenCode ACP → {short_name}");
+                        results.push((full_id, display, "opencode-acp".to_string()));
+                    }
+                }
+            }
+        }
+
+        // 8. Dynamiczne odkrywanie modeli z `kilo models` (302 modele, 17 darmowych)
+        // Tylko jeśli `kilo` jest na PATH. Modele dodawane jako "kilo-run/<model>".
+        if *cli_map.get("kilo").unwrap_or(&false) {
+            if let Ok(output) = tokio::process::Command::new("kilo")
+                .arg("models")
+                .output()
+                .await
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let model_id = line.trim();
+                    if model_id.is_empty() || model_id.starts_with('#') { continue; }
+                    // Format: kilo/<model> — usuń prefix "kilo/" jeśli istnieje
+                    let clean_model = model_id.strip_prefix("kilo/").unwrap_or(model_id);
+                    let full_id = format!("kilo-run/{clean_model}");
+                    if seen_ids.insert(full_id.clone()) {
+                        let short_name = clean_model.rsplit('/').next().unwrap_or(clean_model);
+                        let display = format!("Kilo Code → {short_name}");
+                        results.push((full_id, display, "kilo-run".to_string()));
+                    }
+                }
+            }
+        }
+
+        // 9. Dynamiczne odkrywanie modeli z `devin models list` (46 rodzin, 100+ modeli)
+        // Tylko jeśli `devin` jest na PATH. Modele dodawane jako "devin-cli/<model_uid>".
+        if *cli_map.get("devin").unwrap_or(&false) {
+            if let Ok(output) = tokio::process::Command::new("devin")
+                .arg("models")
+                .arg("list")
+                .output()
+                .await
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // `devin models list` może wypisywać na stdout lub stderr
+                let combined = format!("{stdout}\n{stderr}");
+                for line in combined.lines() {
+                    let line = line.trim();
+                    // Linie z modelami mają format: "  model-uid                        Display Name  [context, pricing]"
+                    // Pierwsze słowo (bez spacji) to model UID
+                    if line.starts_with("MODEL_") || line.starts_with("claude-") || line.starts_with("gpt-")
+                        || line.starts_with("gemini-") || line.starts_with("grok-") || line.starts_with("kimi-")
+                        || line.starts_with("deepseek-") || line.starts_with("glm-") || line.starts_with("inkling-")
+                        || line.starts_with("penguin-") || line.starts_with("nemotron-") || line.starts_with("swe-")
+                        || line.starts_with("opus") || line.starts_with("sonnet") || line.starts_with("codex")
+                        || line.starts_with("haiku") || line.starts_with("gemini")
+                    {
+                        let model_uid = line.split_whitespace().next().unwrap_or(line);
+                        if !model_uid.is_empty() {
+                            let full_id = format!("devin-cli/{model_uid}");
+                            if seen_ids.insert(full_id.clone()) {
+                                // Wyciągnij display name (druga kolumna do "[")
+                                let display_name = line.split("[")
+                                    .next()
+                                    .unwrap_or(line)
+                                    .split_whitespace()
+                                    .skip(1)
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                let display = if display_name.is_empty() {
+                                    format!("Devin CLI → {model_uid}")
+                                } else {
+                                    format!("Devin CLI → {display_name}")
+                                };
+                                results.push((full_id, display, "devin-cli".to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         results
+    }
+
+    /// Sprawdza czy binarka CLI jest dostępna na PATH.
+    /// Szybkie: używa `where.exe` (Windows) / `which` (Unix) zamiast uruchamiać proces.
+    pub fn is_cli_available(binary: &str) -> bool {
+        if cfg!(windows) {
+            // `where.exe` — uwaga: w PowerShell `where` to alias dla Where-Object!
+            std::process::Command::new("where.exe")
+                .arg(binary)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            std::process::Command::new("which")
+                .arg(binary)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Mapuje provider tag → binarka CLI do sprawdzenia.
+    /// Zwraca None dla providerów które nie są CLI (API, bridge, etc).
+    pub fn cli_binary_for_provider(provider: &str) -> Option<&'static str> {
+        match provider {
+            // ACP — binarka CLI
+            "opencode-acp" => Some("opencode"),
+            "devin-acp" => Some("devin"),
+            "gemini-acp" => Some("gemini"),
+            "claude-code-acp" => Some("claude-code-acp"),
+            "codex-acp" => Some("codex-acp"),
+            // Subprocess CLI — binarka CLI
+            "kilo-run" => Some("kilo"),
+            "cline-cli" => Some("cline"),
+            "devin-cli" => Some("devin"),
+            "claude-code-cli" => Some("claude"),
+            "gemini-cli" => Some("gemini"),
+            "codex-cli" => Some("codex"),
+            "aider-cli" => Some("aider"),
+            _ => None,
+        }
+    }
+
+    /// Sprawdza dostępność wszystkich CLI binary i zwraca mapę provider→available.
+    /// Wywoływane raz przy starcie (w discover_models).
+    pub fn detect_cli_providers() -> std::collections::HashMap<&'static str, bool> {
+        let binaries = [
+            "opencode", "devin", "gemini", "kilo", "cline",
+            "claude-code-acp", "codex-acp", "claude", "codex", "aider",
+        ];
+        let mut map = std::collections::HashMap::new();
+        for bin in binaries {
+            map.insert(bin, Self::is_cli_available(bin));
+        }
+        map
     }
 }
 
@@ -850,5 +1000,27 @@ mod tests {
             // fav filter should contain the favorite
             // switch to fav tab is index 0
         });
+    }
+
+    #[test]
+    fn test_cli_binary_for_provider_mapping() {
+        // CLI providers → binarka
+        assert_eq!(ProviderRouter::cli_binary_for_provider("opencode-acp"), Some("opencode"));
+        assert_eq!(ProviderRouter::cli_binary_for_provider("devin-acp"), Some("devin"));
+        assert_eq!(ProviderRouter::cli_binary_for_provider("gemini-acp"), Some("gemini"));
+        assert_eq!(ProviderRouter::cli_binary_for_provider("kilo-run"), Some("kilo"));
+        assert_eq!(ProviderRouter::cli_binary_for_provider("cline-cli"), Some("cline"));
+        // Nie-CLI providers → None
+        assert_eq!(ProviderRouter::cli_binary_for_provider("gemini"), None);
+        assert_eq!(ProviderRouter::cli_binary_for_provider("openai"), None);
+        assert_eq!(ProviderRouter::cli_binary_for_provider("bridge"), None);
+    }
+
+    #[test]
+    fn test_is_cli_available_cargo() {
+        // cargo powinien być dostępny (to projekt Rust)
+        assert!(ProviderRouter::is_cli_available("cargo"));
+        // nieistniejąca binarka → false
+        assert!(!ProviderRouter::is_cli_available("nonexistent_binary_xyz_123"));
     }
 }

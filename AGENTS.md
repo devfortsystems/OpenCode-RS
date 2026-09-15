@@ -5,13 +5,13 @@
 ```bash
 cargo check                  # ~17s — szybki check
 cargo build                  # pełny build, zero ostrzeżeń
-cargo test                   # 164 testów, ~80s
+cargo test                   # 163 testów, ~25s
 cargo test memory::          # tylko memory (19 testów, w tym /palace)
 cargo test skills::          # tylko skills (5 testów)
 cargo test providers::       # tylko providers (cli_subprocess + devin_cloud + antigravity)
 cargo test cost::            # tylko cost + TokenEstimator (6 testów)
 cargo test tools::           # tylko ToolEngine metadata (4 testy)
-cargo test app::             # tylko app.rs (11 testów: model tabs, filtered_models, App::new)
+cargo test app::             # tylko app.rs (15 testów: model tabs, filtered_models, App::new, cancel_streaming, timeout)
 cargo test importer::        # tylko importer.rs (14 testów: strip_json_comments, apply_env_key)
 cargo test file_manager::    # tylko file_manager.rs (21 testów: file_color, PaneState, navigation)
 cargo test database::        # tylko DevFortDB embedded (12 testów: JSON, TTL, scan, increment, sessions)
@@ -55,7 +55,7 @@ opencode-rs jako **meta-agent** — deleguje zadania do innych agentów-CLI i ch
 - `codex-cli` → `codex` (Codex CLI)
 - `devin-cloud` / `devin-cloud-{fast,lite,ultra,fusion}` → api.devin.ai v3 (sesje w chmurze, wymaga `DEVIN_API_KEY` + `DEVIN_ORG_ID`)
 - `devin-acp` / `devin-acp-{opus,sonnet,codex}` → `devin acp` (Agent Client Protocol, JSON-RPC over stdio — streaming, plan, tool calls, thoughts, auto-approve permissions)
-- `opencode-acp` / `opencode-acp-{free,go}` → `opencode acp` (oryginalny opencode v1.18.21, 127 modeli w tym darmowe ling/mimo/nemotron — **nie wymaga wtyczki**, to CLI)
+- `opencode-acp` / `opencode-acp-{free,go}` → `opencode acp` (oryginalny opencode v1.18.29, 127+ modeli w tym darmowe ling/mimo/nemotron — **nie wymaga wtyczki**, to CLI)
 - `kilo-run` / `kilo-run-free` → `kilo run --format json -m <model>` (Kilo Code v7.5.9, fork opencode, 302 modele, 17 darmowych: nvidia nemotron, minimax, ling, poolside, stepfun, thinkingmachines — **nie wymaga wtyczki**, to CLI)
 - `cline-cli` → `cline --auto-approve true -m <model>` (Cline CLI v3.0.2, ma też `--acp` ale wymaga API key)
 - `gemini-acp` → `gemini --acp` (Gemini CLI v0.58.0, **darmowy tier** 60 req/min + 1000/day, wymaga `gemini` login Google account)
@@ -63,6 +63,84 @@ opencode-rs jako **meta-agent** — deleguje zadania do innych agentów-CLI i ch
 - `codex-acp` → `codex-acp` (OpenAI Codex przez ACP adapter, wymaga OPENAI_API_KEY)
 
 Routing w `providers/mod.rs` `execute_provider()` — sprawdzany przed innymi providerami.
+
+## Wymagania — co wymaga wtyczki
+
+Trzy kategorie modeli — **tylko pierwsza wymaga wtyczki VS Code**:
+
+### 1. Wymaga wtyczki (Bridge Extension)
+
+Modele z edytorów (Cursor, Windsurf, Trae, VS Code, GitHub Copilot, Amazon Q, Augment) — dostępne przez `vscode.lm` API, wymaga zainstalowania **OpenCode-RS Universal Bridge** (`bridge-extension/`).
+
+**Instalacja wtyczki:**
+1. Otwórz VS Code / Cursor / Windsurf / Trae
+2. `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+3. Wybierz `bridge-extension/out/extension.vsix` (lub skompiluj: `cd bridge-extension && npm install && npm run compile`)
+4. Wtyczka startuje HTTP server na porcie 8765-8767 (auto-fallback)
+5. Status: `$(radio-tower) OpenCode-RS: Active` w status barze edytora
+
+**Weryfikacja:** `curl http://127.0.0.1:8765/health` → `{"status":"ok","editor":"Cursor","version":"1.18.25"}`
+
+**Modele wymagające wtyczki:**
+- `opencode-*` (OpenCode Native — Zen, Go, Flash, Pro, Claude, GPT, Gemini)
+- `cursor-*` (Cursor Pro — Claude, GPT, DeepSeek)
+- `windsurf-*` / `devin-cascade-*` (Windsurf Cascade)
+- `trae-*` (Trae AI — Seed, Kimi, MiniMax, Gemini, GPT)
+- `copilot-*` (GitHub Copilot)
+- `amazon-q*` (Amazon Q Developer)
+- `augment-*` (Augment Code)
+- `commandcode-*` (Command Code — modele bridge, nie `commandcode-cli`)
+
+**Wymaga:** edytor z wtyczką uruchomiony w tle (nie musi być aktywny, wtyczka działa po starcie).
+
+### 2. Wymaga CLI zainstalowanego (bez wtyczki)
+
+Modele z agentów-CLI — **nie wymagają wtyczki**, tylko binarka na PATH. Auto-detekcja: `where.exe`/`which` sprawdza dostępność, model pokazuje się tylko jeśli binarka istnieje.
+
+| Model | CLI | Instalacja | Wymaga |
+|---|---|---|---|
+| `devin-cli*` | `devin` | `npm i -g @devin/cli` | login devin.ai |
+| `devin-acp*` | `devin` | `npm i -g @devin/cli` | login devin.ai |
+| `claude-code-cli*` | `claude` | `npm i -g @anthropic/claude-code` | ANTHROPIC_API_KEY lub Claude Pro/Max |
+| `claude-code-acp` | `claude-code-acp` | `npm i -g @anthropic/claude-code-acp` | ANTHROPIC_API_KEY lub Claude Pro/Max |
+| `aider-cli` | `aider` | `pip install aider-chat` | klucz API modelu |
+| `gemini-cli` | `gemini` | `npm i -g @google/gemini-cli` | `gemini` login (Google account) |
+| `gemini-acp` | `gemini` | `npm i -g @google/gemini-cli` | `gemini` login (darmowy tier 60 req/min) |
+| `codex-cli` | `codex` | `npm i -g @openai/codex` | OPENAI_API_KEY |
+| `codex-acp` | `codex-acp` | `npm i -g @openai/codex-acp` | OPENAI_API_KEY |
+| `opencode-acp*` | `opencode` | `npm i -g opencode-ai@latest` | `opencode auth` (darmowe ling/mimo/nemotron) |
+| `kilo-run*` | `kilo` | `npm i -g kilo-ai@latest` | `kilo auth` (17 darmowych modeli) |
+| `cline-cli` | `cline` | `npm i -g @cline/cli` | `cline auth` (API key) |
+
+**Wymaga:** tylko binarka na PATH. Lazy start — CLI uruchamia się przy pierwszym prompcie.
+
+### 3. Wymaga API key lub lokalnego serwera (bez wtyczki, bez CLI)
+
+| Model | Co | Wymaga |
+|---|---|---|
+| `gemini-3.7-*` | Direct Gemini API | `GEMINI_API_KEY` w `.env`/`auth.json` |
+| `openai/*` | Direct OpenAI API | `OPENAI_API_KEY` |
+| `anthropic/*` | Direct Anthropic API | `ANTHROPIC_API_KEY` |
+| `deepseek/*` | Direct DeepSeek API | `DEEPSEEK_API_KEY` |
+| `groq-*` | Direct Groq API | `GROQ_API_KEY` |
+| `mistral/*` | Direct Mistral API | `MISTRAAL_API_KEY` |
+| `openrouter/*` | OpenRouter aggregator | `OPENROUTER_API_KEY` |
+| `devin-cloud*` | Devin Cloud (api.devin.ai v3) | `DEVIN_API_KEY` + `DEVIN_ORG_ID` |
+| `ollama/*` | Ollama local | Ollama running na `localhost:11434` |
+| `lmstudio/*` | LM Studio local | LM Studio running na `localhost:1234` |
+| `llamacpp/*` | Llama.cpp server | server running na `localhost:8080` |
+| `antigravity-*` | Antigravity IDE | Antigravity IDE uruchomione (gRPC-Web direct, **darmowe**) |
+
+**Wymaga:** klucz w `.env` lub `~/.opencode/auth.json`, albo lokalny serwer running.
+
+### Szybki test
+
+```bash
+opencode doctor    # sprawdza: bridge, klucze API, CLI binary, lokalne serwery
+opencode models    # lista modeli + status (✅ OK / ⚪ NO_KEY / ⚪ BRIDGE / ❌ FAIL)
+```
+
+`opencode doctor` pokazuje dokładnie co jest dostępne i czego brakuje.
 
 ### 3 sposoby integracji z Devinem
 
@@ -123,6 +201,14 @@ Plan i memory blocks są wstrzykiwane w prompt delegatów (Devin ACP/Cloud) prze
 - [x] Sesje w DevFortDB — `SessionManager` używa DB primary, JSON fallback + auto-migracja
 - [x] Archival memory (HNSW) — `src/archival.rs` (Grafowektor + hash/Ollama/OpenAI embedding, tools `archival_search`/`archival_add`/`archival_list`)
 - [x] `/context` — podgląd zużycia context window (rozkład tokenów: system prompt, memory, plan, skills, archival, historia)
+- [x] Fix UI freeze — Esc anuluje streaming, auto-recovery (timeout 90s idle / 5 min total), Ctrl+C zawsze działa, AbortHandle zabija task agenta
+- [x] Auto-detekcja CLI — `where.exe`/`which` sprawdza binarki (opencode, devin, gemini, kilo, cline, claude-code-acp, codex-acp); modele CLI pokazują się tylko jeśli binarka zainstalowana; lazy start przy pierwszym prompcie
+- [x] Dynamiczne odkrywanie modeli — `opencode models` (127 modeli) + `kilo models` (302 modele) uruchamiane w tle w `discover_models()`; modele dodawane jako `opencode-acp/<model>` i `kilo-run/<model>`
+- [x] `src/opencode_compat.rs` — pełna kompatybilność opencode v1.18.21 + CommandCode v1.x: loader `opencode.json`/`opencode.jsonc` (merge global+project), `tui.json` (keybinds), `.opencode/agents/*.md` + `.commandcode/agents/*.md` (frontmatter: mode, model, prompt, temperature, permission, hidden), `.opencode/commands/*.md` + `.commandcode/commands/*.md` ($ARGUMENTS, $1-$9, !`cmd`, @file), `.opencode/plugins/*.js|ts` + `.commandcode/mods/*.ts` (loader + node subprocess bridge), formatters (built-in: rustfmt/gofmt/prettier/black/clang-format + custom z configa), LSP servers (config + extensions), permissions (ask/allow/deny per tool)
+- [x] Komendy TUI: `/agents` `/agent <nazwa>` `/commands` `/mods` `/plugins` `/compat` `/keybinds` `/format <plik>` + custom komendy z `.opencode/commands/*.md` i `.commandcode/commands/*.md` (auto-wykrywanie w `handle_command _ =>`)
+- [x] CommandCode Mods — `.commandcode/mods/*.ts` loader + `execute_mod()` (node subprocess z ModApi shim przez env vars: `COMMANDCODE_MOD`, `COMMANDCODE_MOD_EVENT`, `COMMANDCODE_MOD_PAYLOAD`, `COMMANDCODE_MOD_CWD`)
+- [x] OpenCode Plugins — `.opencode/plugins/*.js|ts` loader + `execute_plugin()` (node subprocess z opencode API shim przez env vars: `OPENCODE_PLUGIN`, `OPENCODE_PLUGIN_HOOK`, `OPENCODE_PLUGIN_PAYLOAD`, `OPENCODE_PLUGIN_CWD`)
+- [x] 16 nowych testów — `opencode_compat::tests::*` (strip_json_comments, split_frontmatter, parse_agent_markdown, parse_command_markdown, render_command_template, check_permission, opencode_config_parse, load_agents_from_markdown, load_commands_from_markdown, commandcode_mods_loading, load_empty_workdir) — łącznie 188 testów
 
 ### Do zrobienia
 

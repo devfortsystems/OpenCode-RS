@@ -106,6 +106,21 @@ impl ContextManager {
                     continue;
                 }
 
+                // @agent-name — delegacja do subagenta (opencode/commandcode)
+                // Jeśli tag pasuje do nazwy subagenta, wstrzyknij informację o delegacji.
+                // Pełne uruchomienie subagenta odbywa się w App::submit_prompt przez SubagentManager.
+                let compat = crate::opencode_compat::OpenCodeCompat::load(&self.work_dir);
+                if let Some(agent) = compat.subagents().iter().find(|a| a.name == tag) {
+                    appended_context.push_str(&format!(
+                        "\n\n[Delegacja do subagenta @{} ({}): {}]\nSubagent zostanie uruchomiony z własną pętlą ReAct.\nPrompt subagenta: {}\n",
+                        agent.name, agent.source_tool, agent.description, agent.prompt
+                    ));
+                    if let Some(model) = &agent.model {
+                        appended_context.push_str(&format!("Model subagenta: {}\n", model));
+                    }
+                    continue;
+                }
+
                 // Sprawdź czy to ścieżka do pliku
                 let file_path = self.work_dir.join(tag);
                 if file_path.exists() && file_path.is_file() {
@@ -294,6 +309,12 @@ impl ContextManager {
     }
 
     pub fn build_system_prompt(&self, active_operator: &str, mode: &str) -> String {
+        self.build_system_prompt_with_agent(active_operator, mode, None)
+    }
+
+    /// Buduje system prompt z opcjonalnym promptem agenta (z opencode/commandcode agents).
+    /// `agent_prompt` — dodatkowy prompt z `.opencode/agents/*.md` lub `.commandcode/agents/*.md`.
+    pub fn build_system_prompt_with_agent(&self, active_operator: &str, mode: &str, agent_prompt: Option<&str>) -> String {
         let project_rules = self.load_project_rules();
         let stack = self.detect_project_stack();
         let current_branch = GitAssistant::get_status_and_diff(&self.work_dir)
@@ -308,6 +329,10 @@ impl ContextManager {
         let memories_ctx = self.load_memories_context();
         let memory_blocks = crate::memory::MemoryBlocks::new(self.work_dir.clone()).inject_into_prompt();
         let project_plan = crate::memory::ProjectPlan::load(&self.work_dir).to_prompt_section();
+        let agent_section = match agent_prompt {
+            Some(p) if !p.is_empty() => format!("AGENT (opencode/commandcode):\n{}\n\n", p),
+            _ => String::new(),
+        };
         let mode_instructions = match mode {
             "architect" => "TRYB ARCHITEKTA: Skup się na planowaniu, projektowaniu architektury, modularności i analizie zależności. Przygotuj plan działania przed wprowadzaniem zmian.",
             "ask" => "TRYB PYTANIA (Read-only): Odpowiadaj na pytania i wyjaśniaj kod. Nie proponuj modyfikacji plików dopóki użytkownik o to wprost nie poprosi.",
@@ -345,7 +370,7 @@ MEMORY BLOCKS (Letta-style, edytowalne — ucz się między sesjami):
 PLAN PROJEKTU (persistentny, per-projekt — `.opencode/plan.md`):
 {project_plan}
 
-SERWERY MODEL CONTEXT PROTOCOL (MCP):
+{agent_section}SERWERY MODEL CONTEXT PROTOCOL (MCP):
 {mcp_report}
 
 TWOJE MOŻLIWOŚCI I NARZĘDZIA:
@@ -450,7 +475,7 @@ mod tests {
         let p = cm.build_system_prompt("cursor-claude-3-7-sonnet", "interactive");
         assert!(p.contains("INTERACTIVE"));
         assert!(p.contains("TASTE-1"));
-        let p2 = cm.build_system_prompt("opencode-zen", "auto");
+        let p2 = cm.build_system_prompt("opencode-acp", "auto");
         assert!(p2.contains("AUTO"));
         fs::remove_dir_all(&dir).ok();
     }

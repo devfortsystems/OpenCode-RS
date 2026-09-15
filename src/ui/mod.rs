@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::providers::ProviderRouter;
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::AppTheme;
 
@@ -55,6 +56,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     if app.show_file_manager {
         render_file_manager(f, size, app);
+    }
+    if app.permission_dialog.is_some() {
+        render_permission_dialog(f, size, app);
     }
 }
 
@@ -1178,6 +1182,10 @@ fn render_model_picker(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled("[f] Dodaj do Ulubionych", Style::default().fg(theme.text_muted))
                 },
             ]),
+            Line::from(vec![
+                Span::styled("Wymaga: ", Style::default().fg(theme.text_muted)),
+                Span::styled(requirement_str(prov), Style::default().fg(theme.accent)),
+            ]),
         ]
     } else {
         vec![
@@ -1295,4 +1303,109 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+/// Zwraca opis wymagań dla danego providera — pokazywany w model pickerze.
+/// Kategoryzuje na: wtyczka (bridge), CLI (binarka), klucz API, lokalny serwer, darmowe.
+fn requirement_str(prov: &str) -> String {
+    // 1. CLI — binarka na PATH (auto-detekcja)
+    if let Some(binary) = ProviderRouter::cli_binary_for_provider(prov) {
+        let available = ProviderRouter::is_cli_available(binary);
+        if available {
+            match binary {
+                "opencode" => return "✅ CLI `opencode` zainstalowany (darmowe ling/mimo/nemotron) — uruchom `opencode auth`".to_string(),
+                "devin" => return "✅ CLI `devin` zainstalowany — wymaga login devin.ai".to_string(),
+                "gemini" => return "✅ CLI `gemini` zainstalowany — darmowy tier 60 req/min (Google login)".to_string(),
+                "kilo" => return "✅ CLI `kilo` zainstalowany — 17 darmowych modeli (uruchom `kilo auth`)".to_string(),
+                "cline" => return "✅ CLI `cline` zainstalowany — wymaga `cline auth` (API key)".to_string(),
+                "claude-code-acp" => return "✅ CLI `claude-code-acp` zainstalowany — wymaga ANTHROPIC_API_KEY lub Claude Pro/Max".to_string(),
+                "codex-acp" => return "✅ CLI `codex-acp` zainstalowany — wymaga OPENAI_API_KEY".to_string(),
+                "claude" => return "✅ CLI `claude` zainstalowany — wymaga ANTHROPIC_API_KEY lub Claude Pro/Max".to_string(),
+                "codex" => return "✅ CLI `codex` zainstalowany — wymaga OPENAI_API_KEY".to_string(),
+                "aider" => return "✅ CLI `aider` zainstalowany — wymaga klucza API modelu (OpenAI/Anthropic/etc.)".to_string(),
+                _ => return format!("✅ CLI `{binary}` zainstalowany"),
+            }
+        } else {
+            match binary {
+                "opencode" => return "❌ CLI `opencode` NIE zainstalowany — uruchom: npm i -g opencode-ai@latest && opencode auth".to_string(),
+                "devin" => return "❌ CLI `devin` NIE zainstalowany — uruchom: npm i -g @devin/cli".to_string(),
+                "gemini" => return "❌ CLI `gemini` NIE zainstalowany — uruchom: npm i -g @google/gemini-cli && gemini login".to_string(),
+                "kilo" => return "❌ CLI `kilo` NIE zainstalowany — uruchom: npm i -g kilo-ai@latest && kilo auth".to_string(),
+                "cline" => return "❌ CLI `cline` NIE zainstalowany — uruchom: npm i -g @cline/cli && cline auth".to_string(),
+                "claude-code-acp" => return "❌ CLI `claude-code-acp` NIE zainstalowany — uruchom: npm i -g @anthropic/claude-code-acp".to_string(),
+                "codex-acp" => return "❌ CLI `codex-acp` NIE zainstalowany — uruchom: npm i -g @openai/codex-acp".to_string(),
+                "claude" => return "❌ CLI `claude` NIE zainstalowany — uruchom: npm i -g @anthropic/claude-code".to_string(),
+                "codex" => return "❌ CLI `codex` NIE zainstalowany — uruchom: npm i -g @openai/codex".to_string(),
+                "aider" => return "❌ CLI `aider` NIE zainstalowany — uruchom: pip install aider-chat".to_string(),
+                _ => return format!("❌ CLI `{binary}` NIE zainstalowany"),
+            }
+        }
+    }
+
+    // 2. Bridge — wtyczka VS Code (Cursor/Windsurf/Trae/VS Code)
+    let bridge_providers = [
+        "opencode", "cursor", "windsurf", "trae", "copilot", "amazon-q", "augment", "commandcode",
+    ];
+    if bridge_providers.contains(&prov) {
+        return "🔌 Wtyczka OpenCode-RS Bridge — zainstaluj VSIX w edytorze (Cursor/Windsurf/Trae/VS Code)".to_string();
+    }
+
+    // 3. Direct API — klucz w .env/auth.json
+    match prov {
+        "gemini" => "🔑 GEMINI_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "openai" => "🔑 OPENAI_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "anthropic" => "🔑 ANTHROPIC_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "deepseek" => "🔑 DEEPSEEK_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "groq" => "🔑 GROQ_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "mistral" => "🔑 MISTRAL_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "openrouter" => "🔑 OPENROUTER_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "devin-cloud" => "🔑 DEVIN_API_KEY + DEVIN_ORG_ID w .env (api.devin.ai v3)".to_string(),
+        "ollama" => "🖥️ Ollama running na localhost:11434 (darmowe, lokalne)".to_string(),
+        "lmstudio" => "🖥️ LM Studio running na localhost:1234 (darmowe, lokalne)".to_string(),
+        "llamacpp" => "🖥️ Llama.cpp server na localhost:8080 (darmowe, lokalne)".to_string(),
+        "antigravity" => "🪐 Antigravity IDE uruchomione (gRPC-Web direct, darmowe)".to_string(),
+        _ => "❓ Nieznany provider — sprawdź dokumentację".to_string(),
+    }
+}
+
+/// Renderuje dialog uprawnień — gdy agent chce wykonać tool z permission "ask".
+/// Użytkownik zatwierdza Enter (allow) lub odmawia Esc (deny).
+fn render_permission_dialog(f: &mut Frame, size: Rect, app: &App) {
+    if app.permission_dialog.is_none() { return; }
+    let (tool, args) = app.permission_dialog.as_ref().unwrap();
+
+    let theme = &app.current_theme;
+    let popup_area = centered_rect(60, 25, size);
+
+    // Clear background
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title("🔐 Żądanie uprawnienia")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.warning))
+        .style(Style::default().bg(theme.bg_card));
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Narzędzie: {}", tool),
+            Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Argumenty: {}", &args[..args.len().min(80)]),
+            Style::default().fg(theme.text_muted),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter] ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+            Span::styled("Zezwól  ", Style::default().fg(theme.primary)),
+            Span::styled("[Esc] ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
+            Span::styled("Odmów", Style::default().fg(theme.primary)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).block(block).alignment(Alignment::Center);
+    f.render_widget(paragraph, popup_area);
 }

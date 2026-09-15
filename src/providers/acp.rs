@@ -66,7 +66,7 @@ impl AcpClientProvider {
         Self::new(command, "Devin ACP (JSON-RPC over stdio)", Some(work_dir))
     }
 
-    /// Tworzy provider dla `opencode acp` (oryginalny opencode, 127 modeli w tym darmowe).
+    /// Tworzy provider dla `opencode acp` (oryginalny opencode v1.18.29+, 127+ modeli w tym darmowe).
     /// `model` — opcjonalny model w formacie opencode (np. "opencode/ling-3.0-flash-fin-free").
     /// Jeśli None, używa domyślnego modelu opencode (konfigurowanego przez `opencode auth`).
     /// Model przekazywany przez env var OPENCODE_MODEL (ACP nie ma pola model w protokole).

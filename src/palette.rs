@@ -43,6 +43,18 @@ impl CommandPalette {
                 shortcut: "",
             },
             PaletteItem {
+                command: "/scp",
+                category: "📤 Transfer",
+                description: "Transfer plików SSH: upload/download/ls (wymaga /ssh)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/dropzone",
+                category: "📤 Transfer",
+                description: "Skanuj dropzone (~/.opencode/dropzone/) i dołącz pliki do czatu",
+                shortcut: "",
+            },
+            PaletteItem {
                 command: "/commit",
                 category: "🛠️ Git",
                 description: "Automatyczny commit z opisem wygenerowanym przez AI",
@@ -156,6 +168,48 @@ impl CommandPalette {
                 command: "/opencode",
                 category: "🔑 Autoryzacja",
                 description: "Synchronizacja i odczyt z oryginalnego OpenCode",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/agents",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Lista agentów (.opencode/agents + .commandcode/agents)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/commands",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Lista komend (.opencode/commands + .commandcode/commands)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/mods",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Lista modów CommandCode (.commandcode/mods/*.ts)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/plugins",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Lista pluginów opencode (.opencode/plugins/*.js|ts)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/compat",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Raport kompatybilności opencode + commandcode",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/keybinds",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Konfigurowalne skróty klawiszowe (tui.json)",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/format",
+                category: "🤖 OpenCode/CommandCode",
+                description: "Sformatuj plik (rustfmt/gofmt/prettier/black/clang-format)",
                 shortcut: "",
             },
             PaletteItem {

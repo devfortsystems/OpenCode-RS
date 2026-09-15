@@ -121,6 +121,18 @@ impl CliSpec {
         }
     }
 
+    /// Spec dla Kilo Code z konkretnym modelem (dynamiczne wykrywanie z `kilo models`).
+    /// Format modelu: "kilo/anthropic/claude-sonnet-latest" lub "anthropic/claude-sonnet-latest"
+    pub fn kilo_with_model(model: &str) -> Self {
+        Self {
+            display_name: "Kilo Code (Subprocess, dynamic model)",
+            command: "kilo".to_string(),
+            pre_prompt_args: vec!["run".to_string(), "--format".to_string(), "json".to_string()],
+            prompt_via_stdin: false,
+            model_flag: Some("-m".to_string()),
+        }
+    }
+
     /// Spec dla Cline CLI (`cline --auto-approve true "<prompt>"`).
     /// Cline ma też `--acp` ale wymaga API key — używamy one-shot.
     /// Model przez `-m <model>`, provider przez `-P <id>`.
@@ -182,27 +194,33 @@ impl Provider for CliSubprocessProvider {
         } else {
             Command::new(&self.spec.command)
         };
-        cmd.args(&self.spec.pre_prompt_args);
 
-        // Jeśli CLI wspiera --model flag i model nie jest pusty, dodaj go.
-        // Model z opencode-rs (np. "devin-cli-opus") mapuje na model CLI (np. "opus").
+        // Jeśli CLI wspiera --model flag i model nie jest pusty, dodaj go PRZED pre_prompt_args.
+        // Ważne: `devin --model X -p "prompt"` działa, ale `devin -p --model X "prompt"` nie
+        // bo -p konsumuje --model jako prompt.
         if let Some(ref flag) = self.spec.model_flag {
             if !model.is_empty()
                 && model != "devin-cli" && model != "claude-code-cli"
                 && model != "aider-cli" && model != "gemini-cli" && model != "codex-cli"
-                && model != "kilo-run" && model != "cline-cli" && model != "cline"
+                && model != "kilo-run" && model != "kilo-run-free"
+                && model != "cline-cli" && model != "cline"
             {
-                // Wyciągnij model po prefixie (np. "devin-cli-opus" → "opus")
+                // Wyciągnij model po prefixie:
+                // "devin-cli-opus" → "opus"  (stary statyczny format)
+                // "devin-cli/claude-opus-5-medium" → "claude-opus-5-medium"  (nowy dynamiczny)
                 let cli_model = model
-                    .strip_prefix("devin-cli-")
+                    .strip_prefix("devin-cli/")
+                    .or_else(|| model.strip_prefix("devin-cli-"))
                     .or_else(|| model.strip_prefix("claude-code-cli-"))
                     .or_else(|| model.strip_prefix("aider-cli-"))
                     .or_else(|| model.strip_prefix("gemini-cli-"))
                     .or_else(|| model.strip_prefix("codex-cli-"))
+                    .or_else(|| model.strip_prefix("kilo-run/"))  // dynamiczne: kilo-run/anthropic/...
                     .unwrap_or(model);
                 cmd.arg(flag).arg(cli_model);
             }
         }
+        cmd.args(&self.spec.pre_prompt_args);
 
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped());

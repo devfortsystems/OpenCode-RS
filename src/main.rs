@@ -15,6 +15,7 @@ pub mod git;
 pub mod hermes;
 pub mod live_grep;
 pub mod lsp;
+pub mod lsp_client;
 pub mod i18n;
 pub mod importer;
 pub mod palette;
@@ -37,6 +38,9 @@ pub mod e2e;
 pub mod acp_server;
 pub mod database;
 pub mod archival;
+pub mod transfer;
+pub mod opencode_compat;
+pub mod mod_bridge;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -492,6 +496,8 @@ async fn run_app<B: ratatui::backend::Backend>(
     app: &mut App,
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
+    // Timer do sprawdzania timeoutu streamingu (co 10s)
+    let mut timeout_ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
 
     loop {
         terminal.draw(|f| ui::render(f, app))?;
@@ -515,6 +521,11 @@ async fn run_app<B: ratatui::backend::Backend>(
             // Zdarzenia wewnętrzne (Tokeny streamingu, błędy, zakończenie zadania)
             Some(app_event) = app.event_rx.recv() => {
                 app.handle_app_event(app_event);
+            }
+
+            // Timer sprawdzający czy streaming się nie zawiesił (auto-recovery)
+            _ = timeout_ticker.tick() => {
+                app.check_streaming_timeout();
             }
         }
     }
@@ -800,7 +811,21 @@ async fn run_models_list(work_dir: &Path, provider_filter: Option<&str>) -> Resu
     let config = AppConfig::load_for_project(work_dir);
     let router = Arc::new(ProviderRouter::new(config, work_dir.to_path_buf()));
 
-    let models = router.get_available_models();
+    // Najpierw statyczne modele, potem dynamiczne (Antigravity, opencode, kilo...)
+    let mut models: Vec<(String, String, String)> = router
+        .get_available_models()
+        .into_iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect();
+
+    let dynamic = router.discover_models().await;
+    let seen: std::collections::HashSet<String> = models.iter().map(|(id, _, _)| id.clone()).collect();
+    for (id, name, prov) in dynamic {
+        if !seen.contains(&id) {
+            models.push((id, name, prov));
+        }
+    }
+
     let filtered: Vec<_> = match provider_filter {
         Some(f) => {
             let fl = f.to_lowercase();
@@ -817,7 +842,7 @@ async fn run_models_list(work_dir: &Path, provider_filter: Option<&str>) -> Resu
     }
 
     println!("Dostępne modele ({}):", filtered.len());
-    for (name, provider, _max) in &filtered {
+    for (name, provider, _) in &filtered {
         println!("  • {name} [{provider}]");
     }
     Ok(())

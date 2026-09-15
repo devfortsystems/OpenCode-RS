@@ -208,7 +208,7 @@ mod tests {
     fn test_cost_free_models() {
         // Kilo/OpenCode — darmowe
         assert_eq!(CostEstimator::estimate_cost_from_tokens("kilo-run-free", 100_000), 0.0);
-        assert_eq!(CostEstimator::estimate_cost_from_tokens("opencode-acp-free", 100_000), 0.0);
+        assert_eq!(CostEstimator::estimate_cost_from_tokens("opencode-acp", 100_000), 0.0);
         assert_eq!(CostEstimator::estimate_cost_from_tokens("devin-acp", 100_000), 0.0);
 
         // Claude — płatny
