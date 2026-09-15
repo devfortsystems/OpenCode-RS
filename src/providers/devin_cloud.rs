@@ -94,6 +94,7 @@ impl DevinCloudProvider {
         }
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct CreateResp {
             session_id: Option<String>,
             #[serde(default)]

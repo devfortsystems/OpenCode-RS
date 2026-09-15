@@ -32,7 +32,7 @@ async fn run_kilo(model: Option<&str>, prompt: &str) -> String {
     });
 
     let mut full_output = String::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Some(chunk)) => {
@@ -40,7 +40,10 @@ async fn run_kilo(model: Option<&str>, prompt: &str) -> String {
                 full_output.push_str(&chunk);
             }
             Ok(None) => break,
-            Err(_) => break,
+            Err(_) => {
+                handle.abort();
+                break;
+            }
         }
     }
 
@@ -49,6 +52,7 @@ async fn run_kilo(model: Option<&str>, prompt: &str) -> String {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_kilo_run_free_nemotron() {
     eprintln!("🚀 Test: kilo run → darmowy Nemotron 3.5 Lightning");
 

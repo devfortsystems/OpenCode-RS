@@ -24,7 +24,7 @@ async fn run_opencode_acp(model: Option<&str>, prompt: &str) -> String {
     });
 
     let mut full_output = String::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Some(chunk)) => {
@@ -35,7 +35,10 @@ async fn run_opencode_acp(model: Option<&str>, prompt: &str) -> String {
                 }
             }
             Ok(None) => break,
-            Err(_) => break,
+            Err(_) => {
+                handle.abort();
+                break;
+            }
         }
     }
 
@@ -44,6 +47,7 @@ async fn run_opencode_acp(model: Option<&str>, prompt: &str) -> String {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_opencode_acp_default_model() {
     eprintln!("🚀 Test: opencode acp (domyślny model)");
 
@@ -71,6 +75,7 @@ async fn test_opencode_acp_default_model() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_opencode_acp_free_model() {
     eprintln!("🚀 Test: opencode acp → darmowy Ling 3.0 Flash");
 

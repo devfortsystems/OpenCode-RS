@@ -93,7 +93,7 @@ impl LspDiagnostics {
         self.refresh(work_dir)?;
 
         // Potem uruchom skonfigurowane LSP servers (jeden-shot, nie pełny LSP protokół)
-        for (name, cfg) in lsp_servers {
+        for (_name, cfg) in lsp_servers {
             if cfg.enabled == Some(false) { continue; }
             if let Some(cmd_str) = &cfg.command {
                 // Ustaw env vars jeśli skonfigurowane

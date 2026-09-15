@@ -8,7 +8,6 @@
 //!
 //! Storage: Grafowektor serializowany do DevFortDB (namespace `archival`).
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

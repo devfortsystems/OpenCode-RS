@@ -2303,7 +2303,7 @@ impl App {
                     content: "Użycie: `/local list` lub `/local add <id> <url> [api_key]` lub `/local remove <id>`".to_string(),
                 });
             }
-            "/spawn" | "/agent" => {
+            "/spawn" => {
                 if parts.len() < 2 {
                     self.input_text = "/spawn ".to_string();
                     self.messages.push(ChatMessage {

@@ -62,6 +62,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
+#[allow(dead_code)]
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.current_theme;
     let proj_name = app.work_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".to_string());

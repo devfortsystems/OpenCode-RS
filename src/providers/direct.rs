@@ -53,6 +53,7 @@ struct AnthropicChatRequest<'a> {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct AnthropicStreamEvent {
     #[serde(rename = "type")]
     event_type: Option<String>,

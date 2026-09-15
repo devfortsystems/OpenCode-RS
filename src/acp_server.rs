@@ -18,14 +18,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::Mutex;
 
-use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
     InitializeRequest, InitializeResponse, Implementation, NewSessionRequest, NewSessionResponse,
     PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities, SessionId,
     SessionNotification, SessionUpdate, StopReason, TextContent,
 };
-use agent_client_protocol::{Agent, ConnectionTo, Stdio};
+use agent_client_protocol::{Agent, Stdio};
 
 use crate::agent::Agent as OpencodeAgent;
 use crate::config::AppConfig;
@@ -35,6 +34,7 @@ use crate::providers::ProviderRouter;
 /// Stan sesji ACP — historia czatu + cwd.
 #[derive(Clone)]
 struct AcpSession {
+    #[allow(dead_code)]
     cwd: PathBuf,
     history: Vec<ChatMessage>,
     active_model: String,
@@ -64,13 +64,9 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
     let agent = Arc::new(OpencodeAgent::new(router.clone(), work_dir.clone()));
 
     // Klonowanie do handlerów
-    let sessions_init = sessions.clone();
     let sessions_new = sessions.clone();
     let sessions_prompt = sessions.clone();
-    let sessions_cancel = sessions.clone();
     let agent_prompt = agent.clone();
-    let active_model_prompt = active_model.clone();
-    let agent_mode_prompt = agent_mode.clone();
 
     Agent
         .builder()

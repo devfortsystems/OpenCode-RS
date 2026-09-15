@@ -123,7 +123,7 @@ impl CliSpec {
 
     /// Spec dla Kilo Code z konkretnym modelem (dynamiczne wykrywanie z `kilo models`).
     /// Format modelu: "kilo/anthropic/claude-sonnet-latest" lub "anthropic/claude-sonnet-latest"
-    pub fn kilo_with_model(model: &str) -> Self {
+    pub fn kilo_with_model(_model: &str) -> Self {
         Self {
             display_name: "Kilo Code (Subprocess, dynamic model)",
             command: "kilo".to_string(),

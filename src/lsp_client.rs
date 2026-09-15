@@ -18,6 +18,7 @@ pub struct LspClient {
     /// Kolejka diagnostyk odebranych od serwera (publishDiagnostics).
     diagnostics: Mutex<HashMap<PathBuf, Vec<LspDiagnostic>>>,
     /// ID kolejnego żądania JSON-RPC.
+    #[allow(dead_code)]
     next_id: Mutex<u64>,
 }
 

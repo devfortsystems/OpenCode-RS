@@ -8,6 +8,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 struct GhRelease {
     tag_name: String,
     html_url: String,
+    #[allow(dead_code)]
     body: Option<String>,
 }
 
