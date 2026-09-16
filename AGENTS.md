@@ -209,9 +209,20 @@ Plan i memory blocks są wstrzykiwane w prompt delegatów (Devin ACP/Cloud) prze
 - [x] CommandCode Mods — `.commandcode/mods/*.ts` loader + `execute_mod()` (node subprocess z ModApi shim przez env vars: `COMMANDCODE_MOD`, `COMMANDCODE_MOD_EVENT`, `COMMANDCODE_MOD_PAYLOAD`, `COMMANDCODE_MOD_CWD`)
 - [x] OpenCode Plugins — `.opencode/plugins/*.js|ts` loader + `execute_plugin()` (node subprocess z opencode API shim przez env vars: `OPENCODE_PLUGIN`, `OPENCODE_PLUGIN_HOOK`, `OPENCODE_PLUGIN_PAYLOAD`, `OPENCODE_PLUGIN_CWD`)
 - [x] 16 nowych testów — `opencode_compat::tests::*` (strip_json_comments, split_frontmatter, parse_agent_markdown, parse_command_markdown, render_command_template, check_permission, opencode_config_parse, load_agents_from_markdown, load_commands_from_markdown, commandcode_mods_loading, load_empty_workdir) — łącznie 188 testów
+- [x] Tryb IDE 3-kolumnowy (`F3` / `/ide`) — Eksplorator plików (22%) | Edytor kodu VS Code (48%) | Czat AI (30%)
+- [x] RepoMap (`src/repomap.rs`) — inteligentny kompaktowy indeks symboli AST (fn, struct, class, trait, enum, interface) wstrzykiwany do system promptu (<1500 tokenów)
+- [x] VSIX Manager (`src/vsix.rs`) — rozpakowywanie i obsługa wtyczek Visual Studio Code (.vsix: motywy, serwery LSP, snippety)
+- [x] Narzędzie agenta `web_fetch` (`src/agent/tools.rs`) — pobieranie stron WWW i dokumentacji z czyszczeniem do tekstu/Markdown
+- [x] Silnik kolorowania składni 100% jak w Visual Studio Code (`src/syntax.rs`) — TextMate grammars (`syntect` + `syntect-tui`), 50+ języków, oficjalna paleta barw VS Code Dark+ (#569CD6, #C586C0, #4EC9B0, #DCDCAA, #CE9178, #B5CEA8, #6A9955)
+- [x] Nowe komendy TUI i palety: `/ide`, `/repomap`, `/diff`, `/copy`, `/compact`, `/vsix`
+- [x] Łącznie 211+ testów przechodzących w 100%
 
 ### Do zrobienia
 
 ### 1. Push na origin
-- Commity lokalne, nie pushowane
-- **Koszt:** tryvialny (ale wymaga zgody — nie pushować bez pytania)
+- 3 commity lokalne, nie pushowane:
+  1. `024899f` fix: clean compiler warnings, unreachable /agent pattern and test timeouts
+  2. `07f8ac9` feat: IDE mode (F3), RepoMap AST index, VSIX manager, web_fetch tool, VS Code Dark+ syntax highlighting
+  3. `5a0cff7` feat: TextMate/syntect VS Code syntax highlighting with official Dark+ palette
+- **Koszt:** trywialny (wymaga zgody — nie pushować bez pytania)
+
