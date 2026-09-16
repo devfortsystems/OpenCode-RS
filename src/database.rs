@@ -19,7 +19,7 @@
 //! let session: Option<SessionData> = db.get_session("session-uuid")?;
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,9 +46,22 @@ pub struct Database {
 }
 
 impl Database {
-    /// Otwiera bazę w katalogu `.opencode/db/` (tworzy jeśli nie istnieje).
+    /// Ustala katalog bazy: `.opencode-rs/db` (fallback do legacy `.opencode/db`)
+    pub fn resolve_db_dir(work_dir: &Path) -> PathBuf {
+        let rs_path = work_dir.join(".opencode-rs").join("db");
+        if rs_path.exists() {
+            return rs_path;
+        }
+        let legacy_path = work_dir.join(".opencode").join("db");
+        if legacy_path.exists() {
+            return legacy_path;
+        }
+        rs_path
+    }
+
+    /// Otwiera bazę w katalogu `.opencode-rs/db/` (tworzy jeśli nie istnieje).
     pub fn open(work_dir: &Path) -> Result<Self> {
-        let db_path = work_dir.join(".opencode").join("db");
+        let db_path = Self::resolve_db_dir(work_dir);
         std::fs::create_dir_all(&db_path)?;
 
         let cfg = Config {
@@ -71,7 +84,7 @@ impl Database {
     /// Otwiera bazę w trybie fast (nondurable) — dla cache/statystyk.
     /// 10-30x szybsze zapisy, utrata max ~10ms danych przy crashu.
     pub fn open_fast(work_dir: &Path) -> Result<Self> {
-        let db_path = work_dir.join(".opencode").join("db");
+        let db_path = Self::resolve_db_dir(work_dir);
         std::fs::create_dir_all(&db_path)?;
 
         let cfg = Config {

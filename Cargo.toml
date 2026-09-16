@@ -41,6 +41,14 @@ syntect-tui = "3.0"
 devfortdb-embedded-api = { path = "../baza/crates/embedded-api" }
 devfortdb-core = { path = "../baza/crates/core" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

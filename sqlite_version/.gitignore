@@ -1,0 +1,17 @@
+/target
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+opencode_session_*.json
+locales/*.tmp.json
+SUBSKRYPCJE.md
+.opencode/
+asar_unpacked/
+vendor/
+codex-acp_err.txt
+ls_stderr*.txt
+ls_stdout*.txt
+test_*.py
+extract_asar.py
