@@ -34,6 +34,8 @@ async-trait = "0.1"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 dotenvy = "0.15"
 agent-client-protocol = "2.0"
+syntect = "5.2"
+syntect-tui = "3.0"
 
 # DevFortDB embedded — wbudowana baza danych (MDBX, ACID, TTL, JSON, HNSW)
 devfortdb-embedded-api = { path = "../baza/crates/embedded-api" }

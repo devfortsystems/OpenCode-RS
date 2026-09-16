@@ -6,7 +6,7 @@ use opencode_rs::providers::acp::AcpClientProvider;
 use opencode_rs::providers::{ChatMessage, Provider};
 use tokio::sync::mpsc;
 
-async fn run_acp_test(model: &str, prompt: &str, expect_substring: &str) -> String {
+async fn run_acp_test(model: &str, prompt: &str, _expect_substring: &str) -> String {
     if std::process::Command::new("devin").arg("--version").output().is_err() {
         return "SKIP: devin not available".to_string();
     }
