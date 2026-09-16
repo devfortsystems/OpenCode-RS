@@ -47,6 +47,8 @@ pub struct AppConfig {
     pub sync_server_url: Option<String>,
     pub sync_token: Option<String>,
     pub sync_auto: bool,
+    #[serde(default)]
+    pub ide_mode: bool,               // Tryb IDE (3 kolumny: eksplorator, edytor, czat)
 }
 
 impl Default for AppConfig {
@@ -125,6 +127,7 @@ impl Default for AppConfig {
             sync_server_url: std::env::var("OPENCODE_SYNC_URL").ok(),
             sync_token: std::env::var("OPENCODE_SYNC_TOKEN").ok(),
             sync_auto: false,
+            ide_mode: false,
         }
     }
 }

@@ -107,6 +107,15 @@ pub struct App {
     pub permission_dialog: Option<(String, String)>, // (tool_name, args_summary)
     /// Kanał odpowiedzi na żądanie uprawnienia.
     pub permission_response_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+
+    /// Tryb IDE (3 kolumny: drzewo plików, edytor z VS Code Dark+ syntax, czat)
+    pub ide_mode: bool,
+    /// Ścieżka aktualnie otwartego pliku w edytorze
+    pub editor_file_path: Option<PathBuf>,
+    /// Linie pliku otwartego w edytorze
+    pub editor_lines: Vec<String>,
+    /// Offset przewijania edytora
+    pub editor_scroll: usize,
 }
 
 impl App {
@@ -168,6 +177,7 @@ impl App {
 
         let messages = current_session.messages.clone();
         let available_sessions = session_manager.list_sessions().unwrap_or_default();
+        let ide_mode = config.ide_mode;
 
         Self {
             config,
@@ -221,6 +231,85 @@ impl App {
             current_agent: None,
             permission_dialog: None,
             permission_response_tx: None,
+            ide_mode,
+            editor_file_path: None,
+            editor_lines: Vec::new(),
+            editor_scroll: 0,
+        }
+    }
+
+    /// Otwiera plik w panelu edytora kodu (tryb IDE)
+    pub fn open_file_in_editor(&mut self, path: PathBuf) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            self.editor_lines = content.lines().map(|l| l.to_string()).collect();
+            self.editor_file_path = Some(path);
+            self.editor_scroll = 0;
+        }
+    }
+
+    /// Zmienia bieżący katalog roboczy (terminal cd / /cd / !cd)
+    pub fn change_work_dir(&mut self, target: PathBuf) -> Result<PathBuf> {
+        let resolved = if target.is_absolute() {
+            target
+        } else {
+            self.work_dir.join(target)
+        };
+        let canonical = resolved.canonicalize().unwrap_or(resolved);
+        if !canonical.is_dir() {
+            anyhow::bail!("Ścieżka nie jest katalogiem lub nie istnieje: {}", canonical.display());
+        }
+        std::env::set_current_dir(&canonical).ok();
+        self.work_dir = canonical.clone();
+        self.file_manager = crate::file_manager::FileManagerState::new(canonical.clone());
+        let router = Arc::new(ProviderRouter::new(self.config.clone(), canonical.clone()));
+        self.router = router.clone();
+        let mut agent = Agent::new(router.clone(), canonical.clone());
+        agent.set_permission_channel(self.event_tx.clone());
+        self.agent = Arc::new(agent);
+        self.checkpoint_manager = crate::agent::checkpoint::CheckpointManager::new(canonical.clone());
+        self.env_manager = EnvironmentManager::new(canonical.clone());
+        self.opencode_compat = crate::opencode_compat::OpenCodeCompat::load(&canonical);
+        Ok(canonical)
+    }
+
+    /// Kopiuje tekst do systemowego schowka (Windows: clip.exe, macOS: pbcopy, Linux: xclip)
+    pub fn copy_to_clipboard(text: &str) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            use std::io::Write;
+            let mut child = std::process::Command::new("clip.exe")
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::io::Write;
+            let mut child = std::process::Command::new("pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            use std::io::Write;
+            let mut child = std::process::Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            Ok(())
         }
     }
 
@@ -416,6 +505,30 @@ impl App {
         // Przełączanie widoczności prawego panelu bocznego Ctrl+B
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b') {
             self.show_sidebar = !self.show_sidebar;
+            return Ok(false);
+        }
+
+        // Przełączanie trybu IDE F3 (Drzewo | Edytor VS Code Dark+ | Czat)
+        if key.code == KeyCode::F(3) && !self.show_file_manager {
+            self.ide_mode = !self.ide_mode;
+            let mode_str = if self.ide_mode {
+                if self.editor_file_path.is_none() {
+                    for cand in &["src/main.rs", "src/lib.rs", "Cargo.toml", "package.json", "README.md", "index.ts", "main.py"] {
+                        let p = self.work_dir.join(cand);
+                        if p.exists() {
+                            self.open_file_in_editor(p);
+                            break;
+                        }
+                    }
+                }
+                "Włączono tryb IDE (Drzewo | Edytor VS Code Dark+ | Czat AI)"
+            } else {
+                "Włączono tryb klasyczny (pełny terminal)"
+            };
+            self.messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: format!("🖥️ {mode_str}"),
+            });
             return Ok(false);
         }
 
@@ -1095,6 +1208,44 @@ impl App {
             } else {
                 format!("{}\n\nDodatkowy kontekst użytkownika: {}", template_prompt, user_arg)
             };
+        } else if {
+            let trimmed = prompt.trim();
+            trimmed == "cd"
+                || trimmed.starts_with("cd ")
+                || trimmed.starts_with("/cd")
+                || trimmed.starts_with("!cd")
+        } {
+            let trimmed = prompt.trim();
+            let target_str = if trimmed.starts_with("/cd") {
+                trimmed.trim_start_matches("/cd").trim()
+            } else if trimmed.starts_with("!cd") {
+                trimmed.trim_start_matches("!cd").trim()
+            } else {
+                trimmed.trim_start_matches("cd").trim()
+            };
+            let target_path = if target_str.is_empty() || target_str == "~" {
+                directories::BaseDirs::new()
+                    .map(|b| b.home_dir().to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            } else {
+                PathBuf::from(target_str)
+            };
+            match self.change_work_dir(target_path) {
+                Ok(new_p) => {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("📁 Zmieniono katalog roboczy na:\n`{}`", new_p.display()),
+                    });
+                }
+                Err(e) => {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("❌ Błąd zmiany katalogu: {e}"),
+                    });
+                }
+            }
+            self.save_current_session();
+            return Ok(());
         } else if prompt.starts_with('/') {
             return self.handle_command(&prompt).await;
         } else if prompt.starts_with('!') {
@@ -1258,6 +1409,224 @@ impl App {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
 
         match parts[0] {
+            "/ide" => {
+                if parts.len() > 1 {
+                    let target_path = self.work_dir.join(parts[1]);
+                    self.open_file_in_editor(target_path);
+                    self.ide_mode = true;
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("🖥️ Otwarto plik w edytorze IDE (3 kolumny): `{}`", parts[1]),
+                    });
+                } else {
+                    self.ide_mode = !self.ide_mode;
+                    let st = if self.ide_mode {
+                        if self.editor_file_path.is_none() {
+                            for cand in &["src/main.rs", "src/lib.rs", "Cargo.toml", "package.json", "README.md", "index.ts", "main.py"] {
+                                let p = self.work_dir.join(cand);
+                                if p.exists() {
+                                    self.open_file_in_editor(p);
+                                    break;
+                                }
+                            }
+                        }
+                        "Włączono tryb IDE (Drzewo | Edytor VS Code Dark+ | Czat AI)"
+                    } else {
+                        "Włączono tryb klasyczny (pełny terminal)"
+                    };
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("🖥️ {st}"),
+                    });
+                }
+            }
+            "/repomap" => {
+                let max_tokens = if parts.len() > 1 {
+                    parts[1].parse::<usize>().unwrap_or(1500)
+                } else {
+                    1500
+                };
+                let map_text = crate::repomap::RepoMap::new(self.work_dir.clone())
+                    .with_max_tokens(max_tokens)
+                    .build_map();
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: format!("🗺️ **RepoMap Codebase Outline** (~{} tokenów):\n\n```text\n{}\n```", max_tokens, map_text),
+                });
+            }
+            "/diff" => {
+                let out = std::process::Command::new("git")
+                    .args(["diff", "HEAD"])
+                    .current_dir(&self.work_dir)
+                    .output();
+                match out {
+                    Ok(o) => {
+                        let diff_text = String::from_utf8_lossy(&o.stdout);
+                        if diff_text.trim().is_empty() {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: "✨ Brak niezatwierdzonych zmian (working tree clean).".to_string(),
+                            });
+                        } else {
+                            let truncated = if diff_text.len() > 10000 {
+                                format!("{}...\n(ucięto, łącznie {} znaków)", &diff_text[..10000], diff_text.len())
+                            } else {
+                                diff_text.to_string()
+                            };
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("🔍 **Git Diff (HEAD)**:\n```diff\n{}\n```", truncated),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        self.messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: format!("❌ Błąd git diff: {e}"),
+                        });
+                    }
+                }
+            }
+            "/compact" => {
+                let before_tokens = self.real_context_tokens;
+                let compacted = crate::agent::context::ContextManager::compress_context_if_needed(&mut self.messages, 8000);
+                if compacted {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("🧹 Skompresowano historię konwersacji (przed: ~{} tokenów). Kontekst odświeżony!", before_tokens),
+                    });
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: "🧹 Historia jest zwięzła, kompresja nie była konieczna.".to_string(),
+                    });
+                }
+            }
+            "/vsix" => {
+                if parts.len() > 1 {
+                    if parts[1] == "list" {
+                        match crate::vsix::VsixManager::list_installed() {
+                            Ok(extensions) if extensions.is_empty() => {
+                                self.messages.push(ChatMessage {
+                                    role: "system".to_string(),
+                                    content: "📦 Brak zainstalowanych wtyczek VSIX w `~/.opencode/extensions/`.\nAby zainstalować wtyczkę: `/vsix install <ścieżka.vsix>`".to_string(),
+                                });
+                            }
+                            Ok(extensions) => {
+                                let mut list_md = format!("📦 Zainstalowane wtyczki VSIX ({}):\n\n", extensions.len());
+                                for ext in extensions {
+                                    list_md.push_str(&format!("{}\n", ext));
+                                }
+                                self.messages.push(ChatMessage {
+                                    role: "system".to_string(),
+                                    content: list_md,
+                                });
+                            }
+                            Err(e) => {
+                                self.messages.push(ChatMessage {
+                                    role: "system".to_string(),
+                                    content: format!("❌ Błąd odczytu wtyczek VSIX: {e}"),
+                                });
+                            }
+                        }
+                    } else if parts[1] == "install" && parts.len() > 2 {
+                        let path = std::path::Path::new(parts[2]);
+                        match crate::vsix::VsixManager::install_vsix(path) {
+                            Ok(summary) => {
+                                self.messages.push(ChatMessage {
+                                    role: "system".to_string(),
+                                    content: summary,
+                                });
+                            }
+                            Err(e) => {
+                                self.messages.push(ChatMessage {
+                                    role: "system".to_string(),
+                                    content: format!("❌ Błąd instalacji VSIX: {e}"),
+                                });
+                            }
+                        }
+                    } else {
+                        self.messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: "Użycie: `/vsix list` lub `/vsix install <ścieżka_do_pliku.vsix>`".to_string(),
+                        });
+                    }
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: "Użycie: `/vsix list` lub `/vsix install <ścieżka_do_pliku.vsix>`".to_string(),
+                    });
+                }
+            }
+            "/copy" => {
+                let last_code = self.messages.iter().rev()
+                    .find(|m| m.role == "assistant")
+                    .and_then(|m| {
+                        if let Some(start) = m.content.find("```") {
+                            let after = &m.content[start + 3..];
+                            let code_start = after.find('\n').map(|idx| idx + 1).unwrap_or(0);
+                            let rest = &after[code_start..];
+                            if let Some(end) = rest.rfind("```") {
+                                Some(rest[..end].trim().to_string())
+                            } else {
+                                Some(rest.trim().to_string())
+                            }
+                        } else {
+                            Some(m.content.clone())
+                        }
+                    });
+
+                if let Some(code) = last_code {
+                    match Self::copy_to_clipboard(&code) {
+                        Ok(_) => {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("📋 Skopiowano ostatni kod do systemowego schowka ({} znaków)!", code.len()),
+                            });
+                        }
+                        Err(e) => {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("❌ Błąd kopiowania do schowka: {e}"),
+                            });
+                        }
+                    }
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: "⚠️ Brak kodu od asystenta do skopiowania.".to_string(),
+                    });
+                }
+            }
+            "/cd" => {
+                let target_path = if parts.len() > 1 {
+                    PathBuf::from(parts[1])
+                } else {
+                    directories::BaseDirs::new()
+                        .map(|b| b.home_dir().to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                };
+                match self.change_work_dir(target_path) {
+                    Ok(new_p) => {
+                        self.messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: format!("📁 Zmieniono katalog roboczy na:\n`{}`", new_p.display()),
+                        });
+                    }
+                    Err(e) => {
+                        self.messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: format!("❌ Błąd zmiany katalogu: {e}"),
+                        });
+                    }
+                }
+            }
+            "/bypass" | "/yolo" => {
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: "⚡ Tryb Bypass/YOLO aktywny: Wszystkie operacje (edycja, bash, pobieranie) są auto-zatwierdzane bez pytania.".to_string(),
+                });
+            }
             "/lang" | "/language" => {
                 if parts.len() > 1 {
                     if parts[1] == "export" {
@@ -2233,18 +2602,25 @@ impl App {
                 }
             }
             "/undo" => {
-                match GitAssistant::undo_uncommitted_changes(&self.work_dir) {
-                    Ok(msg) => {
-                        self.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: format!("↩️ {msg}"),
-                        });
-                    }
-                    Err(e) => {
-                        self.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: format!("❌ Błąd cofania: {e}"),
-                        });
+                if let Ok(msg) = self.checkpoint_manager.rollback_latest() {
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("↩️ [Snapshot] {msg}"),
+                    });
+                } else {
+                    match GitAssistant::undo_uncommitted_changes(&self.work_dir) {
+                        Ok(msg) => {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("↩️ [Git] {msg}"),
+                            });
+                        }
+                        Err(e) => {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("❌ Błąd cofania: {e}"),
+                            });
+                        }
                     }
                 }
             }
@@ -3195,6 +3571,9 @@ impl App {
                 self.stream_start_time = None;
                 self.real_context_chars = 0; // reset po zakończeniu streamingu
                 self.real_context_tokens = 0;
+                // Subtelny dźwięk dzwonka terminala (Terminal Chime / Bell) po zakończeniu generowania
+                print!("\x07");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
                 if !self.streaming_buffer.is_empty() {
                     self.messages.push(ChatMessage {
                         role: "assistant".to_string(),

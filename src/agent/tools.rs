@@ -240,6 +240,127 @@ impl ToolEngine {
             Ok(matches.join("\n"))
         }
     }
+
+    /// Pobiera zawartość strony WWW i konwertuje ją do czytelnego Markdown/tekstu
+    pub fn web_fetch(&self, url: &str, max_chars: Option<usize>) -> Result<String> {
+        let max_chars = max_chars.unwrap_or(8000).min(32000);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(12))
+            .user_agent("OpenCode-RS/1.19.0 (Terminal AI Coding Agent; +https://github.com/devfortsystems/OpenCode-RS)")
+            .build()?;
+
+        let fetch_future = async {
+            let resp = client.get(url).send().await?;
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(anyhow::anyhow!("HTTP błąd {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")));
+            }
+            let text = resp.text().await?;
+            Ok::<String, anyhow::Error>(text)
+        };
+
+        let raw_html = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(fetch_future))?
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            rt.block_on(fetch_future)?
+        };
+
+        let clean = Self::clean_html_to_markdown(&raw_html);
+        let len = clean.chars().count();
+        let truncated: String = clean.chars().take(max_chars).collect();
+        let was_truncated = len > max_chars;
+
+        let token_est = crate::cost::TokenEstimator::estimate(&truncated);
+        let header = format!(
+            "🌐 [{url}] (pobrano {} znaków, ~{} tokenów{}):\n\n",
+            truncated.len(),
+            token_est,
+            if was_truncated { format!("; przycięto z {len}") } else { String::new() }
+        );
+
+        Ok(format!("{header}{truncated}"))
+    }
+
+    /// Pomocnik: usuwa tagi skryptów, styli i upraszcza HTML do czytelnego tekstu
+    pub fn clean_html_to_markdown(html: &str) -> String {
+        let mut clean = html.to_string();
+
+        // Usuń bloki <script>...</script> i <style>...</style>
+        while let Some(start) = clean.to_lowercase().find("<script") {
+            if let Some(end) = clean.to_lowercase()[start..].find("</script>") {
+                clean.replace_range(start..start + end + 9, " ");
+            } else {
+                break;
+            }
+        }
+        while let Some(start) = clean.to_lowercase().find("<style") {
+            if let Some(end) = clean.to_lowercase()[start..].find("</style>") {
+                clean.replace_range(start..start + end + 8, " ");
+            } else {
+                break;
+            }
+        }
+        while let Some(start) = clean.to_lowercase().find("<head") {
+            if let Some(end) = clean.to_lowercase()[start..].find("</head>") {
+                clean.replace_range(start..start + end + 7, " ");
+            } else {
+                break;
+            }
+        }
+
+        // Zamiana popularnych tagów na markdown
+        clean = clean.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
+        clean = clean.replace("<p>", "\n\n").replace("</p>", "\n");
+        clean = clean.replace("<h1>", "\n# ").replace("</h1>", "\n");
+        clean = clean.replace("<h2>", "\n## ").replace("</h2>", "\n");
+        clean = clean.replace("<h3>", "\n### ").replace("</h3>", "\n");
+        clean = clean.replace("<li>", "\n• ").replace("</li>", "");
+        clean = clean.replace("<code>", "`").replace("</code>", "`");
+        clean = clean.replace("<pre>", "\n```\n").replace("</pre>", "\n```\n");
+
+        // Usuń pozostałe tagi HTML
+        let mut out = String::with_capacity(clean.len());
+        let mut in_tag = false;
+        for ch in clean.chars() {
+            if ch == '<' {
+                in_tag = true;
+            } else if ch == '>' {
+                in_tag = false;
+            } else if !in_tag {
+                out.push(ch);
+            }
+        }
+
+        // Zdekoduj encje HTML
+        let decoded = out
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&nbsp;", " ");
+
+        // Normalizuj puste linie (max 2 z rzędu)
+        let mut result = Vec::new();
+        let mut empty_streak = 0;
+        for line in decoded.lines() {
+            let t = line.trim();
+            if t.is_empty() {
+                empty_streak += 1;
+                if empty_streak <= 1 {
+                    result.push("");
+                }
+            } else {
+                empty_streak = 0;
+                result.push(t);
+            }
+        }
+
+        result.join("\n").trim().to_string()
+    }
 }
 
 #[cfg(test)]

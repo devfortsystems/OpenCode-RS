@@ -23,8 +23,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(size);
 
-    // Podział poziomy: Lewa strona (Czat + Input) vs Prawa strona (Sidebar informacyjny)
-    if app.show_sidebar {
+    // Podział poziomy: Tryb IDE (3 kolumny) vs Tryb Klasyczny (Czat + ew. Sidebar)
+    if app.ide_mode {
+        let h_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(22), // Eksplorator plików
+                Constraint::Percentage(48), // Edytor kodu (VS Code Dark+)
+                Constraint::Percentage(30), // Czat AI i input
+            ])
+            .split(root_chunks[0]);
+
+        render_ide_file_explorer(f, h_chunks[0], app);
+        render_ide_editor(f, h_chunks[1], app);
+        render_chat_column(f, h_chunks[2], app);
+    } else if app.show_sidebar {
         let h_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -456,6 +469,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("Motyw  ", Style::default().fg(Color::Rgb(156, 163, 175))),
         Span::styled("[^B] ", Style::default().fg(Color::Rgb(52, 211, 153)).add_modifier(Modifier::BOLD)),
         Span::styled("Sidebar  ", Style::default().fg(Color::Rgb(156, 163, 175))),
+        Span::styled("[F3] ", Style::default().fg(Color::Rgb(250, 204, 21)).add_modifier(Modifier::BOLD)),
+        Span::styled(if app.ide_mode { "Classic  " } else { "IDE  " }, Style::default().fg(Color::Rgb(156, 163, 175))),
         Span::styled("[^C] ", Style::default().fg(Color::Rgb(248, 113, 113)).add_modifier(Modifier::BOLD)),
         Span::styled("Wyjście", Style::default().fg(Color::Rgb(156, 163, 175))),
     ]);
@@ -1410,3 +1425,155 @@ fn render_permission_dialog(f: &mut Frame, size: Rect, app: &App) {
     let paragraph = Paragraph::new(lines).block(block).alignment(Alignment::Center);
     f.render_widget(paragraph, popup_area);
 }
+
+/// Renderuje lewy panel w trybie IDE — drzewo / listę plików roboczych
+fn render_ide_file_explorer(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.current_theme;
+    let pane = &app.file_manager.left;
+    let dir_name = app
+        .work_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "PROJEKT".to_string());
+
+    let block = Block::default()
+        .title(format!(" 📁 {} ", dir_name.to_uppercase()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.primary));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let visible_rows = inner.height as usize;
+    if visible_rows == 0 {
+        return;
+    }
+
+    let items = &pane.items;
+    if items.is_empty() {
+        let empty_msg = Paragraph::new(Line::from(Span::styled(
+            " (brak plików) ",
+            Style::default().fg(theme.text_muted),
+        )));
+        f.render_widget(empty_msg, inner);
+        return;
+    }
+
+    let selected = pane.selected_index;
+    let start_idx = if selected >= visible_rows {
+        selected - visible_rows + 1
+    } else {
+        0
+    };
+
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .skip(start_idx)
+        .take(visible_rows)
+        .enumerate()
+        .map(|(i, item)| {
+            let real_idx = start_idx + i;
+            let is_selected = real_idx == selected;
+            let icon = if item.is_dir { "📁 " } else { "📄 " };
+            let mut style = if item.is_dir {
+                Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            if is_selected {
+                style = Style::default()
+                    .bg(theme.bg_card)
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD);
+            }
+
+            let line = Line::from(vec![
+                Span::styled(if is_selected { "▶ " } else { "  " }, style),
+                Span::styled(icon, style),
+                Span::styled(item.name.clone(), style),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(list_items);
+    f.render_widget(list, inner);
+}
+
+/// Renderuje środkowy panel w trybie IDE — edytor kodu z numerami linii i VS Code Dark+
+fn render_ide_editor(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.current_theme;
+    let file_name = app
+        .editor_file_path
+        .as_ref()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .unwrap_or_else(|| "Brak otwartego pliku".to_string());
+
+    let line_count = app.editor_lines.len();
+    let title = if app.editor_file_path.is_some() {
+        format!(" 📝 {} ({} linii) ", file_name, line_count)
+    } else {
+        " 📝 Edytor kodu (Wpisz /ide <plik> lub wybierz z drzewa) ".to_string()
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.secondary));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.editor_lines.is_empty() {
+        let help_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "   Tryb IDE aktywny (3 kolumny: Drzewo | Edytor VS Code Dark+ | Czat AI)",
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "   • Wpisz /ide <plik> np. `/ide src/main.rs`, aby wyświetlić plik",
+                Style::default().fg(theme.text_muted),
+            )),
+            Line::from(Span::styled(
+                "   • Naciśnij F3, aby przełączyć się z powrotem do klasycznego trybu terminala",
+                Style::default().fg(theme.text_muted),
+            )),
+            Line::from(Span::styled(
+                "   • Składnia w 100% z palety VS Code Dark+ (Rust, TypeScript, Python, etc.)",
+                Style::default().fg(theme.secondary),
+            )),
+        ];
+        let p = Paragraph::new(help_lines);
+        f.render_widget(p, inner);
+        return;
+    }
+
+    let visible_height = inner.height as usize;
+    let ext = app
+        .editor_file_path
+        .as_ref()
+        .and_then(|p| p.extension())
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let scroll = app.editor_scroll.min(line_count.saturating_sub(1));
+    let display_lines: Vec<Line> = app
+        .editor_lines
+        .iter()
+        .skip(scroll)
+        .take(visible_height)
+        .enumerate()
+        .map(|(idx, line)| {
+            SyntaxHighlighter::highlight_editor_line(scroll + idx + 1, line, &ext)
+        })
+        .collect();
+
+    let p = Paragraph::new(display_lines);
+    f.render_widget(p, inner);
+}
+

@@ -441,6 +441,19 @@ impl Agent {
                     .unwrap_or_default();
                 self.tools.grep_search(query)
             }
+            "web_fetch" | "webfetch" | "fetch" => {
+                let url = args
+                    .get("url")
+                    .or_else(|| args.get("uri"))
+                    .or_else(|| args.get("link"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let max_chars = args.get("max_chars").and_then(|v| v.as_u64()).map(|n| n as usize);
+                if url.is_empty() {
+                    return Err(anyhow::anyhow!("web_fetch wymaga parametru 'url'"));
+                }
+                self.tools.web_fetch(url, max_chars)
+            }
             "core_memory_append" => {
                 let label = args.get("label").and_then(|v| v.as_str()).unwrap_or_default();
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or_default();

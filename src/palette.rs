@@ -72,6 +72,44 @@ impl CommandPalette {
                 description: "Bezpieczne cofnięcie ostatnich zmian (git stash backup)",
                 shortcut: "",
             },
+            PaletteItem {
+                command: "/diff",
+                category: "🛠️ Git",
+                description: "Podgląd zmian roboczych w projekcie (git diff HEAD)",
+                shortcut: "",
+            },
+
+            // 🖥️ Tryb IDE i Edycja
+            PaletteItem {
+                command: "/ide",
+                category: "🖥️ IDE",
+                description: "Przełącz tryb IDE: Drzewo | Edytor kodu (VS Code Dark+) | Czat",
+                shortcut: "F3",
+            },
+            PaletteItem {
+                command: "/repomap",
+                category: "🗺️ Kod",
+                description: "Generuj mapę kodu AST (RepoMap) mieszczącą się w <1500 tokenów",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/copy",
+                category: "📋 Schowek",
+                description: "Kopiuj ostatni wygenerowany kod AI do schowka systemowego",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/compact",
+                category: "🧹 Kontekst",
+                description: "Skompresuj historię rozmowy i zwolnij tokeny context window",
+                shortcut: "",
+            },
+            PaletteItem {
+                command: "/vsix",
+                category: "📦 Wtyczki",
+                description: "Zarządzanie wtyczkami Visual Studio Code (/vsix install, /vsix list)",
+                shortcut: "",
+            },
 
             // 📁 Pliki i Eksploracja
             PaletteItem {

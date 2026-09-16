@@ -329,6 +329,7 @@ impl ContextManager {
         let memories_ctx = self.load_memories_context();
         let memory_blocks = crate::memory::MemoryBlocks::new(self.work_dir.clone()).inject_into_prompt();
         let project_plan = crate::memory::ProjectPlan::load(&self.work_dir).to_prompt_section();
+        let repomap_section = crate::repomap::RepoMap::new(self.work_dir.clone()).with_max_tokens(1000).build_map();
         let agent_section = match agent_prompt {
             Some(p) if !p.is_empty() => format!("AGENT (opencode/commandcode):\n{}\n\n", p),
             _ => String::new(),
@@ -351,6 +352,9 @@ KONTEKST PROJEKTU:
 - Katalog projektu: {work_dir}
 - Wykryty stos technologiczny: {stack}
 - Stan repozytorium: {current_branch}
+
+REPO MAP (Symbol Indexing & Architecture):
+{repomap_section}
 
 REGUŁY I WYTYCZNE PROJEKTU:
 {project_rules}
@@ -379,7 +383,8 @@ TWOJE MOŻLIWOŚCI I NARZĘDZIA:
    - `edit_file(path, target_content, replacement_content)` – precyzyjna podmiana kodu,
    - `write_file(path, content)` – tworzenie nowych plików,
    - `bash_exec(command)` – wykonywanie komend powłoki (Host / WSL / Docker),
-   - `grep_search(query)` – szybkie przeszukiwanie bazy kodu.
+   - `grep_search(query)` – szybkie przeszukiwanie bazy kodu,
+   - `web_fetch(url, max_chars?)` – pobieranie stron WWW i dokumentacji z sieci z oczyszczaniem do tekstu.
 2. Pamięć (uczenie się między sesjami, Letta-style):
    - `core_memory_append(label, content)` – dopisz wiedzę do bloku (label: persona | human | project),
    - `core_memory_replace(label, old_str, new_str)` – podmień fragment bloku,
@@ -413,6 +418,7 @@ ZASADY:
             work_dir = self.work_dir.display(),
             stack = stack,
             current_branch = current_branch,
+            repomap_section = repomap_section,
             project_rules = project_rules,
             taste_ctx = if taste_ctx.is_empty() { "(brak taste.md — uruchom `npx taste push --all` lub /taste)" } else { &taste_ctx },
             skills_ctx = if skills_ctx.is_empty() { "(brak skilli — dodaj .roo/skills/*/SKILL.md)" } else { &skills_ctx },

@@ -45,3 +45,5 @@ pub mod database;
 pub mod transfer;
 pub mod opencode_compat;
 pub mod mod_bridge;
+pub mod repomap;
+pub mod vsix;

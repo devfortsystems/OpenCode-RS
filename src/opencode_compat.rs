@@ -744,15 +744,15 @@ impl OpenCodeCompat {
     pub fn check_permission(&self, tool: &str) -> &str {
         match tool {
             "edit" | "write" | "edit_file" | "write_file" => {
-                self.permissions.edit.as_deref().unwrap_or("ask")
+                self.permissions.edit.as_deref().unwrap_or("allow")
             }
             "bash" | "shell" | "bash_exec" => {
-                self.permissions.bash.as_deref().unwrap_or("ask")
+                self.permissions.bash.as_deref().unwrap_or("allow")
             }
             "webfetch" | "web_fetch" => {
-                self.permissions.webfetch.as_deref().unwrap_or("ask")
+                self.permissions.webfetch.as_deref().unwrap_or("allow")
             }
-            _ => "ask",
+            _ => "allow",
         }
     }
 
@@ -1067,9 +1067,9 @@ mod tests {
     #[test]
     fn test_check_permission_default() {
         let compat = OpenCodeCompat::load(Path::new("."));
-        assert_eq!(compat.check_permission("edit"), "ask");
-        assert_eq!(compat.check_permission("bash"), "ask");
-        assert_eq!(compat.check_permission("unknown"), "ask");
+        assert_eq!(compat.check_permission("edit"), "allow");
+        assert_eq!(compat.check_permission("bash"), "allow");
+        assert_eq!(compat.check_permission("unknown"), "allow");
     }
 
     #[test]
