@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -16,6 +17,9 @@ pub struct ChatSession {
     pub updated_at: String,
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    /// Dodatkowe pola (draft_prompt, itp.) — persystują automatycznie bez zmian schematu.
+    #[serde(default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +126,7 @@ impl SessionManager {
                 role: "system".to_string(),
                 content: "Witaj w OpenCode-RS! Wpisz prompt lub użyj [Ctrl+M], aby wybrać operatora, albo [Ctrl+H], aby przejrzeć historię sesji.".to_string(),
             }],
+            extra: BTreeMap::new(),
         }
     }
 

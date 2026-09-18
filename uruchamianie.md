@@ -29,23 +29,43 @@ W przeciwieństwie do Cursor, VS Code czy Devin (które ważą 400–800 MB i wy
 
 Uruchomienie OpenCode-RS w odizolowanym kontenerze z dostępem do Twojego projektu przez przeglądarkę.
 
-### A. Gotowy `Dockerfile`
-Utwórz plik `Dockerfile` w projekcie:
+### A. Gotowy `Dockerfile` z repozytorium
+
+Repozytorium **zawiera już gotowy plik `Dockerfile`** w korzeniu projektu (razem z `.dockerignore`). Skorzystaj z niego bezpośrednio:
+
+```bash
+# 1. Skompiluj binarkę release
+cargo build --release
+
+# 2. Zbuduj obraz Docker
+docker build -t opencode-rs .
+
+# 3. Uruchom kontener
+docker run -d -p 8765:8765 -v ./twoj-projekt:/workspace -v opencode-data:/root/.opencode-rs opencode-rs
+```
+
+**Zawartość gotowego Dockerfile:** (debian:bookworm-slim, kopiuje `target/release/opencode-rs`, wystawia port 8765, uruchamia `opencode web`)
+
+---
+
+### B. Własny `Dockerfile` (opcjonalnie, gdy potrzebujesz dodatkowych narzędzi)
+Jeśli chcesz dostosować obraz (dodać kompilatory, Python, Node.js itp.), możesz rozszerzyć szablon:
 
 ```dockerfile
-# Minimalny obraz Linux
+# Bazowy obraz Linux z dodatkowymi narzędziami developerskimi
 FROM debian:bookworm-slim
 
-# Zainstaluj podstawowe narzędzia developerskie (dostosuj do swojego języka: git, curl, build-essential, python3, rust, itp.)
+# Zainstaluj narzędzia (dostosuj do swojego języka: build-essential, python3, rust, itp.)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     git \
     build-essential \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Skopiuj binarkę opencode (lub pobierz z wydania)
-COPY opencode /usr/local/bin/opencode
+# Skopiuj binarkę opencode (lub pobierz z wydania GitHub)
+COPY target/release/opencode-rs /usr/local/bin/opencode
 RUN chmod +x /usr/local/bin/opencode
 
 # Katalog roboczy dla Twoich projektów
@@ -55,10 +75,10 @@ WORKDIR /workspace
 EXPOSE 8765
 
 # Uruchomienie serwera Web w trybie sieciowym
-ENTRYPOINT ["opencode", "web", "--host", "0.0.0.0", "--port", "8765"]
+ENTRYPOINT ["opencode", "web", "--port", "8765"]
 ```
 
-### B. `docker-compose.yml` (Zalecane)
+### C. `docker-compose.yml` (Zalecane)
 ```yaml
 version: '3.8'
 
@@ -83,7 +103,7 @@ volumes:
   opencode-data:
 ```
 
-### C. Uruchomienie:
+### D. Uruchomienie:
 ```bash
 docker compose up -d
 ```

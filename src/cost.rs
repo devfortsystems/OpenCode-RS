@@ -203,9 +203,15 @@ impl CostEstimator {
         } else if p == "cursor" || p == "windsurf" || p == "trae" || p == "copilot" || p == "amazon-q" || p == "augment" {
             ("VS Code Bridge (Edytor)", 0.00, 0.00, "W cenie abonamentu edytora".to_string(), "Subskrypcja (W abonamencie)", true)
         } else if p == "devin-cli" || p == "devin-acp" || m.contains("devin-cli") || m.contains("devin-acp") {
-            ("Cognition Devin CLI", 0.00, 0.00, "W cenie subskrypcji Devin".to_string(), "Subskrypcja (W abonamencie)", false)
+            if m.contains("swe-2") {
+                ("Cognition Devin SWE-2", 0.00, 0.00, "$0.00 (Darmowy - własny model Devina)".to_string(), "Darmowy (Free Tier)", true)
+            } else {
+                ("Cognition Devin CLI", 0.00, 0.00, "W cenie subskrypcji Devin".to_string(), "Subskrypcja (W abonamencie)", false)
+            }
         } else if p == "devin-cloud" || m.contains("devin-cloud") {
             ("Devin Cloud VM", 2.00, 2.00, "$2.00 / sesja chmurowa".to_string(), "Subskrypcja (Chmura)", false)
+        } else if p == "commandcode" || m.contains("commandcode") {
+            ("Command Code API", 0.80, 2.40, "Wg stawek Command Code (pay-per-token)".to_string(), "Direct API (Pay-per-token)", false)
         } else if p == "claude-code-cli" || p == "claude-code-acp" {
             ("Claude Code CLI", 3.00, 15.00, "Claude Pro lub Anthropic API".to_string(), "Subskrypcja / Direct API", false)
         } else if p == "codex-cli" || p == "codex-acp" {

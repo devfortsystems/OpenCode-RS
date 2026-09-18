@@ -197,15 +197,15 @@ enum Command {
 
     /// Uruchom w zasobniku systemowym (Windows System Tray) z serwerem Web
     Tray {
-        /// Port serwera Web Companion (domyślnie 8765)
-        #[arg(short, long, default_value_t = 8765)]
+        /// Port serwera Web Companion (domyślnie 7711, unikaj kolizji z Bridge Extension na 8765-8767)
+        #[arg(short, long, default_value_t = 7711)]
         port: u16,
     },
 
     /// Uruchom serwer Web Companion w przeglądarce
     Web {
-        /// Port serwera Web Companion (domyślnie 8765)
-        #[arg(short, long, default_value_t = 8765)]
+        /// Port serwera Web Companion (domyślnie 7711, unikaj kolizji z Bridge Extension na 8765-8767)
+        #[arg(short, long, default_value_t = 7711)]
         port: u16,
     },
 }
@@ -267,8 +267,8 @@ struct CliArgs {
     #[arg(long)]
     web: bool,
 
-    /// Port dla serwera Web Companion (domyślnie: 8765)
-    #[arg(long, default_value_t = 8765)]
+    /// Port dla serwera Web Companion (domyślnie: 7711, unikaj kolizji z Bridge Extension na 8765-8767)
+    #[arg(long, default_value_t = 7711)]
     port: u16,
 
     /// Subkomenda (opencode run / acp / mcp / models / auth / doctor / session / stats / ...)
@@ -335,6 +335,7 @@ async fn main() -> Result<()> {
     // Tryb Tray (zasobnik systemowy Windows)
     if args.tray {
         let port = args.port;
+        AuthManager::auto_load_credentials(&work_dir);
         let companion = Arc::new(crate::web::WebCompanionServer::new(port, work_dir.clone(), config.clone()));
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
         companion.start_background(tx);
@@ -344,6 +345,7 @@ async fn main() -> Result<()> {
     // Tryb Web (serwer + automatyczne otwarcie w przeglądarce)
     if args.web {
         let port = args.port;
+        AuthManager::auto_load_credentials(&work_dir);
         let companion = Arc::new(crate::web::WebCompanionServer::new(port, work_dir.clone(), config.clone()));
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
         companion.start_background(tx);
@@ -566,40 +568,96 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
+    use crate::providers::ChatMessage;
     let mut event_stream = EventStream::new();
-    // Timer do sprawdzania timeoutu streamingu (co 10s)
+
     let mut timeout_ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
 
-    loop {
-        terminal.draw(|f| ui::render(f, app))?;
+    let mut render_ticker = tokio::time::interval(tokio::time::Duration::from_millis(16));
+    render_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut needs_render = true;
 
+    terminal.draw(|f| ui::render(f, app))?;
+
+    loop {
         tokio::select! {
-            // Najwyższy priorytet dla klawiatury i zdarzeń wejścia (0ms opóźnienia)
             biased;
 
-            // Zdarzenia z klawiatury / myszy
+            // ═══ 1. Zdarzenia wejścia (NAJWYŻSZY PRIORYTET — 0ms lag)
             maybe_event = event_stream.next() => {
+                let is_input_event = matches!(maybe_event,
+                    Some(Ok(Event::Key(_) | Event::Mouse(_) | Event::Resize(_, _)))
+                );
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
                         if app.handle_key_event(key).await? {
-                            break; // Wyjście z aplikacji (Ctrl+C)
+                            break;
                         }
                     }
                     Some(Ok(Event::Mouse(mouse))) => {
                         app.handle_mouse_event(mouse);
                     }
+                    Some(Ok(Event::Resize(cols, rows))) => {
+                        let _ = terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows));
+                        app.handle_resize(cols, rows);
+                    }
                     _ => {}
                 }
+                // ═══════════════════════════════════════════════════════
+                // UI ZAWSZE REAGUJE: NATYCHMIASTOWY RENDER PO WEJŚCIU.
+                //
+                // Poprzednio: nawet klawiatura czekała na render_ticker
+                // 16ms. Dla szybkiego pisarza 10 znaków/s to 10×16ms
+                // opóźnienie per znak = widoczny lag.
+                //
+                // Teraz: PO każdym event wejścia (Key/Mouse/Resize) —
+                // natychmiastowy terminal.draw() IGNORUJĄCY throttle.
+                // Średnio: 1-3 drawy na sekundę podczas pisania, a nie
+                // 0 opóźnienie dla percepcji.
+                // ═══════════════════════════════════════════════════════
+                if is_input_event {
+                    terminal.draw(|f| ui::render(f, app))?;
+                    needs_render = false;
+                } else {
+                    needs_render = true;
+                }
+                // Draft auto-save: co każde zdarzenie klawiatury próbkujemy
+                // (delegujemy do debounced w App — 800ms między fsync).
+                app.maybe_save_draft_debounced();
             }
 
-            // Zdarzenia wewnętrzne (Tokeny streamingu, błędy, zakończenie zadania)
+            // ═══ 2. Zdarzenia wewnętrzne (tokeny, koniec streamu…)
             Some(app_event) = app.event_rx.recv() => {
                 app.handle_app_event(app_event);
+                while let Some(next) = app.pending_next_submit.take() {
+                    match app.submit_prompt(next).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            app.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!("❌ Błąd kolejki promptów: {e}"),
+                            });
+                        }
+                    }
+                }
+                needs_render = true;
             }
 
-            // Timer sprawdzający czy streaming się nie zawiesił (auto-recovery)
+            // ═══ 3. Render tick 60 FPS
+            _ = render_ticker.tick() => {
+                if needs_render {
+                    terminal.draw(|f| ui::render(f, app))?;
+                    needs_render = false;
+                }
+                // Draft sample również co tick (gdy np. użytkownik nie pisał,
+                // ale coś się zmieniło przez pending queue — też zapisz).
+                app.maybe_save_draft_debounced();
+            }
+
+            // ═══ 4. Timeout ticker 10s
             _ = timeout_ticker.tick() => {
                 app.check_streaming_timeout();
+                needs_render = true;
             }
         }
     }
@@ -616,7 +674,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 /// Tryb cykliczny:   `opencode --sleeptime 300` (co 5 minut)
 ///
 /// Refleksja używa domyślnego modelu z config. Wynik jest wypisywany na stdout
-/// i zapisywany do .opencode/sleeptime_log.md.
+/// i zapisywany do .opencode-rs/sleeptime_log.md.
 async fn run_sleeptime(
     work_dir: PathBuf,
     config: AppConfig,
@@ -875,6 +933,7 @@ async fn run_subcommand(cmd: &Command, work_dir: &Path, args: &CliArgs) -> Resul
         }
 
         Command::Tray { port } => {
+            AuthManager::auto_load_credentials(work_dir);
             let config = AppConfig::load_for_project(work_dir);
             let companion = Arc::new(crate::web::WebCompanionServer::new(*port, work_dir.to_path_buf(), config));
             let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -883,6 +942,7 @@ async fn run_subcommand(cmd: &Command, work_dir: &Path, args: &CliArgs) -> Resul
         }
 
         Command::Web { port } => {
+            AuthManager::auto_load_credentials(work_dir);
             let config = AppConfig::load_for_project(work_dir);
             let companion = Arc::new(crate::web::WebCompanionServer::new(*port, work_dir.to_path_buf(), config));
             let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -1025,7 +1085,11 @@ async fn run_models_list(work_dir: &Path, provider_filter: Option<&str>, free_on
                 return bridge_ok;
             }
             if p == "commandcode" {
-                return bridge_ok || *cli_map.get("commandcode").unwrap_or(&false) || auth_keys.contains_key("commandcode");
+                // Uwaga: w auth.json może być "command-code" z myślnikiem lub "commandcode" bez.
+                // CLI commandcode nie jest obowiązkowe (wtyczka bridge + direct API też działają).
+                return bridge_ok || *cli_map.get("commandcode").unwrap_or(&false)
+                    || auth_keys.contains_key("commandcode") || auth_keys.contains_key("command-code")
+                    || config.commandcode_api_key.is_some();
             }
             false
         })

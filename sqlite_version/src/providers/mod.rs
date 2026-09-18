@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
+use crate::auth::AuthManager;
 use crate::config::AppConfig;
 
 pub mod acp;
@@ -89,6 +91,37 @@ pub struct ProviderRouter {
     // 32 modele (Gemini 3.x, Claude 4.6, GPT-OSS) — wszystkie darmowe (free-tier).
     // Lazy init: provider tworzony przy pierwszym użyciu (wymaga uruchomionego IDE).
     antigravity: tokio::sync::OnceCell<Arc<AntigravityProvider>>,
+}
+
+/// Wyciąga prefix providera z ID modelu (np. "antigravity-gemini-3.8" → "antigravity",
+/// "commandcode/claude-sonnet-5" → "commandcode", "opencode-acp/gemini-3.7" → "opencode-acp").
+fn extract_provider_prefix(model: &str) -> Option<&str> {
+    // 1. Format z ukośnikiem: provider/model (np. commandcode/..., opencode-acp/...)
+    if let Some(idx) = model.find('/') {
+        return Some(&model[..idx]);
+    }
+    // 2. Format z myślnikiem: provider-model
+    if let Some(idx) = model.find('-') {
+        let short = &model[..idx];
+        match short {
+            "antigravity" | "gemini" | "kilo" | "commandcode" | "cline"
+            | "aider" | "codex" | "ollama" | "lmstudio" | "llamacpp"
+            | "cursor" | "windsurf" | "devin" | "trae" | "copilot"
+            | "amazon" | "augment" | "deepseek" | "groq" | "mistral"
+            | "openrouter" | "openai" | "anthropic" | "google" | "meta"
+            | "nvidia" | "qwen" | "ali" | "kimi" | "minimax" | "ling" => return Some(short),
+            _ => {}
+        }
+        // 3. Długie prefixy z wieloma myślnikami (devin-cli, devin-acp, opencode-acp, kilo-run, gemini-acp)
+        for candidate in &["devin-cli", "devin-acp", "opencode-acp", "kilo-run", "gemini-acp",
+                           "claude-code-cli", "claude-code-acp", "codex-acp", "commandcode-cli"] {
+            if model.starts_with(candidate) {
+                return Some(candidate);
+            }
+        }
+        return Some(short);
+    }
+    None
 }
 
 impl ProviderRouter {
@@ -417,6 +450,43 @@ impl ProviderRouter {
     ) -> Result<String> {
         let mut models_to_try = vec![requested_model.to_string()];
 
+        // (A) Jeśli użytkownik wybrał model z konkretnego providera → najpierw spróbuj
+        //     PARĘ INNYCH WARIANTÓW TEGO SAMEGO PROVIDERA, zanim przejdziesz do global
+        //     fallback chain. Np. antigravity-gemini-3.8-* padł → najpierw kolejne
+        //     antigravity, a nie od razu cursor-sonnet.
+        if let Some(prefix) = extract_provider_prefix(requested_model) {
+            let alts: &[&str] = match prefix {
+                "antigravity" => &[
+                    "antigravity-gemini-3.8-flash-tiered",
+                    "antigravity-gemini-3.8-pro-tiered",
+                    "antigravity-gemini-3.7-flash-tiered",
+                    "antigravity-gemini-3.5-flash-tiered",
+                    "antigravity-claude-4-6-sonnet-tiered",
+                    "antigravity-claude-3-7-sonnet-tiered",
+                    "antigravity-gpt-4o-tiered",
+                ],
+                "commandcode" => &[
+                    "commandcode/claude-sonnet-5",
+                    "commandcode/claude-sonnet-4-6",
+                    "commandcode/gemini-3.8-pro",
+                    "commandcode/gemini-3.7-flash",
+                    "commandcode/gpt-5.6-pro",
+                    "commandcode/deepseek/deepseek-r1",
+                ],
+                "opencode-acp" => &["opencode-acp/claude-sonnet-5", "opencode-acp/gemini-3.8-flash", "opencode-acp/gpt-4o-mini"],
+                "kilo-run" | "kilo" => &["kilo-run-free/nemotron-3-ultra-550b", "kilo-run/gemini-3.8-pro", "kilo-run/claude-sonnet-5"],
+                "devin-cli" | "devin" => &["devin-cli/swe-2-high", "devin-cli/claude-sonnet-5", "devin-cli/swe-2-medium"],
+                "gemini-acp" | "gemini" => &["gemini-acp/gemini-3.8-flash", "gemini-acp/gemini-3.7-flash"],
+                "devin-acp" => &["devin-acp/claude-sonnet-5", "devin-acp/codex-so1n"],
+                _ => &[],
+            };
+            for a in alts {
+                if *a != requested_model && !models_to_try.iter().any(|x| x == a) {
+                    models_to_try.push((*a).to_string());
+                }
+            }
+        }
+
         if self.config.auto_failover {
             for fallback in &self.config.fallback_chain {
                 if fallback != requested_model && !models_to_try.contains(fallback) {
@@ -584,11 +654,13 @@ impl ProviderRouter {
             return self.commandcode.stream_chat(model, messages, token_tx).await;
         }
 
-        if model.starts_with("commandcode-") || model.starts_with("cmd-") {
+        if model.starts_with("commandcode-") || model.starts_with("cmd-") || model.starts_with("commandcode/") || model.starts_with("cmd/") {
             if let Some(ref cmdcode) = self.direct_commandcode {
                 let target_model = model
                     .strip_prefix("commandcode-")
                     .or_else(|| model.strip_prefix("cmd-"))
+                    .or_else(|| model.strip_prefix("commandcode/"))
+                    .or_else(|| model.strip_prefix("cmd/"))
                     .unwrap_or(model);
                 return cmdcode.stream_chat(target_model, messages, token_tx).await;
             }
@@ -725,20 +797,37 @@ impl ProviderRouter {
             .build()
             .unwrap_or_default();
 
-        // 3. Odpytaj mostek Bridge (/v1/models)
-        let bridge_url = format!("{}/models", self.config.bridge_url.trim_end_matches('/'));
-        if let Ok(resp) = client.get(&bridge_url).send().await {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-                    for item in data {
-                        if let (Some(id), Some(name)) = (
-                            item.get("id").and_then(|v| v.as_str()),
-                            item.get("name").and_then(|v| v.as_str()),
-                        ) {
-                            let prov = item.get("provider").and_then(|v| v.as_str()).unwrap_or("bridge");
-                            if seen_ids.insert(id.to_string()) {
-                                results.push((id.to_string(), name.to_string(), prov.to_string()));
+        // 3. Odpytaj mostek Bridge (/v1/models) — fallback wszystkie 3 porty
+        //    (tak samo jak w stream_chat w bridge.rs candidate_urls()).
+        //    Poprzednio: tylko config.bridge_url → jeśli użytkownik miał 8765 w configu,
+        //    a Trae działał na 8766 (standardowe dzisiaj), 0 modeli bridge (opencode-zen,
+        //    opencode-go, cursor-*, windsurf-*, trae-*, copilot-* itp. NIE POKAZYWAŁY SIĘ
+        //    w ogóle. Teraz: próba 8765 → 8766 → 8767 (jak w stream chat fallback).
+        {
+            // Utwórz tymczasowy BridgeProvider żeby użyć jego candidate_urls (sprawdzony
+            // algorytm z 3 portami + suffix /v1).
+            let bridge_probe = crate::providers::bridge::BridgeProvider::new(self.config.bridge_url.clone());
+            let fast_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+                .unwrap_or_default();
+            for base in bridge_probe.candidate_urls() {
+                let models_url = format!("{}/models", base.trim_end_matches('/'));
+                if let Ok(resp) = fast_client.get(&models_url).send().await {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                            for item in data {
+                                if let (Some(id), Some(name)) = (
+                                    item.get("id").and_then(|v| v.as_str()),
+                                    item.get("name").and_then(|v| v.as_str()),
+                                ) {
+                                    let prov = item.get("provider").and_then(|v| v.as_str()).unwrap_or("bridge");
+                                    if seen_ids.insert(id.to_string()) {
+                                        results.push((id.to_string(), name.to_string(), prov.to_string()));
+                                    }
+                                }
                             }
+                            break; // Pierwszy działający mostek wystarczy (nie duplikuj)
                         }
                     }
                 }
@@ -806,21 +895,36 @@ impl ProviderRouter {
             }
         }
 
-        // 7. Dynamiczne odkrywanie modeli z `opencode models` (127 modeli, w tym darmowe)
-        // Tylko jeśli `opencode` jest na PATH. Modele dodawane jako "opencode-acp/<model>".
+        // 7. Dynamiczne odkrywanie modeli z `opencode models` (127 modeli, w tym darmowe + commandcode 58 modeli)
+        // Tylko jeśli `opencode` jest na PATH. Zwykłe modele → "opencode-acp/<model>".
+        // Modele z prefixem "commandcode/" → OD RĘKU dodajemy jako "commandcode/<model>"
+        // (provider "commandcode" — uruchamiane przez DirectApiProvider commandcode, tak jak w starym opencode).
         if *cli_map.get("opencode").unwrap_or(&false) {
             if let Ok(output) = Self::run_cli_with_timeout("opencode", &["models"]).await {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // `opencode models` (WinGet shim) może pisać na stdout lub stderr (podobnie jak devin models).
+                // Dlatego łączymy oba strumienie, tak samo jak w pkt 9 dla devina.
+                let combined = format!("{stdout}\n{stderr}");
+                for line in combined.lines() {
                     let model_id = line.trim();
                     if model_id.is_empty() || model_id.starts_with('#') { continue; }
-                    // Format: opencode/<model> lub opencode-go/<model>
-                    let full_id = format!("opencode-acp/{model_id}");
-                    if seen_ids.insert(full_id.clone()) {
-                        // Skrócona nazwa wyświetlana — ostatnia część po /
-                        let short_name = model_id.rsplit('/').next().unwrap_or(model_id);
-                        let display = format!("OpenCode ACP → {short_name}");
-                        results.push((full_id, display, "opencode-acp".to_string()));
+                    if model_id.starts_with("commandcode/") {
+                        // Specjalny przypadek: to jest Command Code model, przekazujemy dalej bez zmian
+                        let full_id = model_id.to_string();
+                        if seen_ids.insert(full_id.clone()) {
+                            let short_name = model_id.rsplit('/').next().unwrap_or(model_id);
+                            let display = format!("Command Code → {short_name}");
+                            results.push((full_id, display, "commandcode".to_string()));
+                        }
+                    } else {
+                        // Standard: opencode/<model> lub opencode-go/<model> → opencode-acp/<model>
+                        let full_id = format!("opencode-acp/{model_id}");
+                        if seen_ids.insert(full_id.clone()) {
+                            let short_name = model_id.rsplit('/').next().unwrap_or(model_id);
+                            let display = format!("OpenCode ACP → {short_name}");
+                            results.push((full_id, display, "opencode-acp".to_string()));
+                        }
                     }
                 }
             }
@@ -893,15 +997,41 @@ impl ProviderRouter {
         results
     }
 
-    /// Uruchamia CLI z twardym timeoutem — `opencode models` (Winget) potrafi wisieć
-    /// w nieskończoność i zablokować discover_models / cargo test.
+    /// Uruchamia CLI z twardym timeoutem — `opencode models` (Winget) i `kilo models` (Volta)
+    /// potrafią trwać 6–17s przy zimnym cache'u Node, a starszy timeout 4s powodował ZAWSZE
+    /// timeout = modele `opencode-acp/*` (127) i `kilo-run/*` (302) NIGDY nie pojawiły się
+    /// na liście w TUI / na Web Companion.
+    ///
+    /// Dodatkowo na Windows binarki z Node menedżerów (Volta, NVM, WinGet) to często
+    /// **shim pliki `.cmd`**, których nie można uruchomić bezpośrednio przez
+    /// `CreateProcess` (oczekuje PE32). Dla portability na Windows zawsze opakowujemy
+    /// wykonanie w `cmd.exe /C <bin> <args...>` — to ten sam pattern co w
+    /// `CliSubprocessProvider` (naprawa poprzedniego buga shimów).
     async fn run_cli_with_timeout(bin: &str, args: &[&str]) -> Result<std::process::Output> {
-        let mut cmd = tokio::process::Command::new(bin);
+        let mut cmd;
+        #[cfg(windows)]
+        {
+            // ══════════════════════════════════════════════════════════════════
+            // FIX: Windows .cmd / .bat shims (Volta, WinGet links).
+            // Bez tej otoczki: CreateProcess szuka <bin>.exe a dostaje <bin>.cmd
+            // → error "nie można odnaleźć pliku" → discover_models zwraca 0
+            //   dynamicznych modeli mimo że where.exe znajduje shim.
+            // ══════════════════════════════════════════════════════════════════
+            cmd = tokio::process::Command::new("cmd.exe");
+            cmd.arg("/C").arg(bin);
+        }
+        #[cfg(not(windows))]
+        {
+            cmd = tokio::process::Command::new(bin);
+        }
         cmd.args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        tokio::time::timeout(Duration::from_secs(4), cmd.output())
+        // Timeout 20s: `kilo models` realnie trwa 16.7s, `opencode models` 6.4s
+        // (pomiar na tym repo, zimny cache Volta / WinGet Node shimów).
+        // 20s to ~20% zapasu ponad najwolniejszy znany przypadek.
+        tokio::time::timeout(Duration::from_secs(20), cmd.output())
             .await
             .map_err(|_| anyhow!("{bin} timeout"))?
             .map_err(|e| anyhow!("{bin}: {e}"))
@@ -959,12 +1089,137 @@ impl ProviderRouter {
     pub fn detect_cli_providers() -> std::collections::HashMap<&'static str, bool> {
         let binaries = [
             "opencode", "devin", "gemini", "kilo", "cline",
-            "claude-code-acp", "codex-acp", "claude", "codex", "aider",
+            "claude-code-acp", "codex-acp", "claude", "codex", "aider", "commandcode",
         ];
         let mut map = std::collections::HashMap::new();
         for bin in binaries {
             map.insert(bin, Self::is_cli_available(bin));
         }
+        map
+    }
+
+    /// Runtime availability map — dla każdego tagu providera (jak w
+    /// `App::model_provider_tabs()`) zwraca true jeśli DA SIĘ TERAZ połączyć
+    /// z tym providerem (binarka istnieje, jest klucz, serwer słucha na
+    /// localhost, mostek Bridge odpowiada).
+    ///
+    /// Używane przez TUI `App::filtered_models()` oraz Web Companion, żeby
+    /// NIE POKAZYWAĆ użytkownikowi modeli do których nie da się połączyć
+    /// (np. antigravity gdy nie ma Antigravity IDE — user request VERBATIM:
+    /// "co do modeli to wystarcza takie do których da się połączyć czyli
+    /// user nie ma antygravity to nie wyświetla antygravity").
+    ///
+    /// Wzór 1:1 na `main.rs:1038-1092` (Web Companion filter który już działa).
+    pub async fn runtime_provider_availability_map(&self) -> HashMap<String, bool> {
+        let mut map: HashMap<String, bool> = HashMap::new();
+
+        // 1. CLI binaries (opencode, devin, gemini, kilo, cline, claude/codex-acp, aider)
+        let cli_map = Self::detect_cli_providers();
+        map.insert("cli".to_string(), true); // placeholder — szczegółowo per-tag poniżej
+
+        // Dla każdego providera który ma swoją binarkę: sprawdź cli_map
+        let cli_tag_map = [
+            ("opencode-acp", "opencode"),
+            ("opencode-zen", "opencode"),
+            ("opencode-go", "opencode"),
+            ("kilo-run", "kilo"),
+            ("cline-cli", "cline"),
+            ("gemini-cli", "gemini"),
+            ("gemini-acp", "gemini"),
+            ("claude-code-cli", "claude"),
+            ("claude-code-acp", "claude-code-acp"),
+            ("codex-cli", "codex"),
+            ("codex-acp", "codex-acp"),
+            ("aider-cli", "aider"),
+            ("devin-cli", "devin"),
+            ("devin-acp", "devin"),
+        ];
+        for (tag, bin) in cli_tag_map {
+            map.insert(tag.to_string(), *cli_map.get(bin).unwrap_or(&false));
+        }
+        // devin-cloud: potrzebuje DEVIN_API_KEY (poniżej w auth keys) — ale też CLI jeśli ma być fallback
+        // commandcode: bridge albo klucz albo CLI — obsłużone specjalnie na końcu.
+
+        // 2. Antigravity IDE — async check 3s timeout PowerShell
+        let antigravity_ok = AntigravityProvider::is_available().await;
+        map.insert("antigravity".to_string(), antigravity_ok);
+
+        // 3. Direct API keys (AuthManager + config.direct_*_api_key)
+        let auth_keys = AuthManager::get_active_keys();
+        let direct_checks = [
+            ("gemini", &self.config.direct_gemini_api_key),
+            ("openai", &self.config.direct_openai_api_key),
+            ("anthropic", &self.config.direct_anthropic_api_key),
+            ("openrouter", &self.config.direct_openrouter_api_key),
+            ("deepseek", &self.config.direct_deepseek_api_key),
+            ("groq", &self.config.direct_groq_api_key),
+            ("mistral", &self.config.direct_mistral_api_key),
+        ];
+        for (tag, cfg_key) in direct_checks {
+            let ok = auth_keys.contains_key(tag) || cfg_key.is_some();
+            map.insert(tag.to_string(), ok);
+        }
+        // devin-cloud potrzebuje DEVIN_API_KEY + DEVIN_ORG_ID (obydwa)
+        let devin_cloud_ok = (auth_keys.contains_key("devin") || self.config.devin_api_key.is_some())
+            && self.config.devin_org_id.is_some();
+        map.insert("devin-cloud".to_string(), devin_cloud_ok);
+
+        // 4. Lokalne serwery Ollama / LM Studio / Llama.cpp — GET endpoint 500ms
+        let fast_client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap_or_default();
+
+        // Ollama
+        let ollama_url = self.config.ollama_url.as_deref().unwrap_or("http://localhost:11434/v1");
+        let ollama_tags_url = format!("{}/api/tags", ollama_url.trim_end_matches("/v1").trim_end_matches('/'));
+        let ollama_ok = fast_client.get(&ollama_tags_url).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false);
+        map.insert("ollama".to_string(), ollama_ok);
+
+        // LM Studio
+        let lm_url = self.config.lmstudio_url.as_deref().unwrap_or("http://localhost:1234/v1");
+        let lm_models_url = format!("{}/models", lm_url.trim_end_matches('/'));
+        let lm_ok = fast_client.get(&lm_models_url).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false);
+        map.insert("lmstudio".to_string(), lm_ok);
+
+        // Llama.cpp
+        let llama_url = self.config.llamacpp_url.as_deref().unwrap_or("http://localhost:8080/v1");
+        let llama_models_url = format!("{}/models", llama_url.trim_end_matches('/'));
+        let llama_ok = fast_client.get(&llama_models_url).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false);
+        map.insert("llamacpp".to_string(), llama_ok);
+
+        // 5. Bridge (trae, cursor, windsurf, copilot, amazon-q, augment) — health 3 porty
+        let bridge_probe = crate::providers::bridge::BridgeProvider::new(self.config.bridge_url.clone());
+        let mut bridge_ok = false;
+        for base in bridge_probe.candidate_urls() {
+            let health_url = format!("{}/health", base.trim_end_matches('/'));
+            if let Ok(resp) = fast_client.get(&health_url).send().await {
+                if resp.status().is_success() {
+                    bridge_ok = true;
+                    break;
+                }
+            }
+        }
+        map.insert("bridge".to_string(), bridge_ok);
+        for tag in ["trae", "cursor", "windsurf", "copilot", "amazon-q", "augment"] {
+            map.insert(tag.to_string(), bridge_ok);
+        }
+
+        // 6. CommandCode: bridge OK LUB CLI commandcode LUB auth klucz commandcode (uwaga: w auth.json może być "command-code" z myślnikiem)
+        let cc_cli_ok = *cli_map.get("commandcode").unwrap_or(&false);
+        let cc_key_ok = auth_keys.contains_key("commandcode") || auth_keys.contains_key("command-code")
+            || self.config.commandcode_api_key.is_some();
+        let commandcode_ok = bridge_ok || cc_cli_ok || cc_key_ok;
+        map.insert("commandcode".to_string(), commandcode_ok);
+
+        // 7. Favorites / All: zawsze true (dla "all" filtr jest per-tag per-model
+        //    więc map nie jest używane, a dla fav user chce je widzieć nawet offline)
+        map.insert("fav".to_string(), true);
+        map.insert("all".to_string(), true);
+
         map
     }
 }

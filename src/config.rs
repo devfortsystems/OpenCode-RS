@@ -121,7 +121,7 @@ impl Default for AppConfig {
             ],
             web_companion_enabled: true,
             web_companion_port: 7711,
-            mcp_config_path: Some(".opencode/mcp.json".to_string()),
+            mcp_config_path: Some(".opencode-rs/mcp.json".to_string()),
             voice_plugin_command: None,
             trust_mode: false,
             agent_hooks_enabled: true,
@@ -222,16 +222,54 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        if path.exists() {
+        let mut cfg = if path.exists() {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
-                    return cfg;
+                    cfg
+                } else {
+                    Self::default()
                 }
+            } else {
+                Self::default()
             }
+        } else {
+            let default_cfg = Self::default();
+            default_cfg.save().ok();
+            default_cfg
+        };
+        // Zawsze nakładaj override z env (klucze API, endpointy) — env ma PIERWSZEŃSTWO
+        // przed wartościami z pliku config.json. Dzięki temu AuthManager (który
+        // ładuje klucze z ~/.opencode-rs/auth.json i ustawia zmienne env)
+        // nigdy nie zostanie zignorowany przez "null" zapisany w config.json.
+        cfg.direct_gemini_api_key = std::env::var("GEMINI_API_KEY").ok().or(cfg.direct_gemini_api_key);
+        cfg.direct_groq_api_key = std::env::var("GROQ_API_KEY").ok().or(cfg.direct_groq_api_key);
+        cfg.direct_openai_api_key = std::env::var("OPENAI_API_KEY").ok().or(cfg.direct_openai_api_key);
+        cfg.direct_anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok().or(cfg.direct_anthropic_api_key);
+        cfg.direct_deepseek_api_key = std::env::var("DEEPSEEK_API_KEY").ok().or(cfg.direct_deepseek_api_key);
+        cfg.direct_mistral_api_key = std::env::var("MISTRAL_API_KEY").ok().or(cfg.direct_mistral_api_key);
+        cfg.direct_openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok().or(cfg.direct_openrouter_api_key);
+        cfg.commandcode_api_key = std::env::var("COMMANDCODE_API_KEY").ok().or(cfg.commandcode_api_key);
+        cfg.commandcode_base_url = Some(
+            std::env::var("COMMANDCODE_BASE_URL")
+                .ok()
+                .unwrap_or_else(|| {
+                    cfg.commandcode_base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.commandcode.ai/v1".to_string())
+                }),
+        );
+        cfg.devin_api_key = std::env::var("DEVIN_API_KEY").ok().or(cfg.devin_api_key);
+        cfg.devin_org_id = std::env::var("DEVIN_ORG_ID").ok().or(cfg.devin_org_id);
+        if let Ok(u) = std::env::var("OLLAMA_URL") {
+            cfg.ollama_url = Some(u);
         }
-        let default_cfg = Self::default();
-        default_cfg.save().ok();
-        default_cfg
+        if let Ok(u) = std::env::var("LMSTUDIO_URL") {
+            cfg.lmstudio_url = Some(u);
+        }
+        if let Ok(u) = std::env::var("LLAMACPP_URL") {
+            cfg.llamacpp_url = Some(u);
+        }
+        cfg
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

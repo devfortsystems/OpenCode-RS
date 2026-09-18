@@ -112,7 +112,7 @@ impl SkillsManager {
     pub fn preview_list(&self) -> String {
         let skills = self.list_skills();
         if skills.is_empty() {
-            return "📦 Brak skilli — dodaj .roo/skills/<name>/SKILL.md lub .opencode/skills/*.md\nWzór: https://docs.roocode.com/skills".to_string();
+            return "📦 Brak skilli — dodaj .roo/skills/<name>/SKILL.md lub .opencode-rs/skills/*.md\nWzór: https://docs.roocode.com/skills".to_string();
         }
         let mut lines = vec![format!("📦 Skilli: {}", skills.len())];
         for s in skills {

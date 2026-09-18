@@ -72,7 +72,12 @@ impl Agent {
                 }
                 _ => "allow", // read-only tools zawsze allow
             },
-            None => "allow", // brak konfiguracji = pełny dostęp (domyślne zachowanie)
+            None => match tool_name {
+                "edit_file" | "replace" | "patch" | "write_file" | "create_file" => "ask",
+                "bash_exec" | "bash" | "shell" | "run_command" => "ask",
+                "web_fetch" | "webfetch" | "fetch" => "ask",
+                _ => "allow", // read-only tools zawsze allow
+            },
         }
     }
 
@@ -282,7 +287,7 @@ impl Agent {
 
                 let _ = token_tx.send(format!("\n\n⚙️ **[Agent Narzędzie: `{}`]** Wykonywanie...\n", call.name)).await;
 
-                let execution_result = match self.execute_tool_call(&call.name, &call.arguments) {
+                let execution_result = match self.execute_tool_call(&call.name, &call.arguments).await {
                     Ok(out) => {
                         let _ = token_tx.send(format!("✅ **Wynik `{}`:**\n```\n{}\n```\n", call.name, &out[..out.len().min(4000)])).await;
                         out
@@ -334,8 +339,10 @@ impl Agent {
         Ok(used_model)
     }
 
-    /// Wykonuje polecenie narzędzia wbudowanego lub zarejestrowanego serwera MCP
-    pub fn execute_tool_call(&self, tool_name: &str, args: &serde_json::Value) -> Result<String> {
+    /// Wykonuje polecenie narzędzia wbudowanego lub zarejestrowanego serwera MCP.
+    /// Przy permission "ask" blokuje aż TUI potwierdzi (Enter) lub odmówi (Esc).
+    /// Headless (brak kanału TUI) = allow.
+    pub async fn execute_tool_call(&self, tool_name: &str, args: &serde_json::Value) -> Result<String> {
         // 0. Sprawdź uprawnienia z opencode.json/commandcode (permission section)
         let perm = self.check_tool_permission(tool_name);
         if perm == "deny" {
@@ -351,10 +358,6 @@ impl Agent {
                 }
             ));
         }
-        // "ask" — w trybie TUI wyślij powiadomienie (nie blokuj!)
-        // Pełny dialog wymagałby async execute_tool_call — to duża zmiana architektury.
-        // Na razie: "ask" = allow (nie blokuje TUI), ale loguj że tool został wykonany.
-        // TODO: async execute_tool_call z dialogiem uprawnień
         if perm == "ask" {
             if let Some(ref tx) = self.permission_tx {
                 let args_summary = serde_json::to_string(args)
@@ -362,14 +365,37 @@ impl Agent {
                     .chars()
                     .take(200)
                     .collect::<String>();
-                // Wyślij powiadomienie (nie blokuj) — użytkownik widzi co się dzieje
-                let _ = tx.try_send(crate::app::AppEvent::StatusNotification(format!(
-                    "⚠️ Wykonuję '{}' (permission: ask)\nArgs: {}",
-                    tool_name, args_summary
-                )));
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                if tx
+                    .send(crate::app::AppEvent::PermissionRequest(
+                        tool_name.to_string(),
+                        args_summary,
+                        resp_tx,
+                    ))
+                    .await
+                    .is_err()
+                {
+                    return Err(anyhow::anyhow!(
+                        "🚫 Narzędzie '{}' odrzucone — TUI nie odbiera żądań uprawnień.",
+                        tool_name
+                    ));
+                }
+                let allowed = tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    resp_rx,
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or(false);
+                if !allowed {
+                    return Err(anyhow::anyhow!(
+                        "🚫 Narzędzie '{}' odrzucone przez użytkownika (permission: ask).",
+                        tool_name
+                    ));
+                }
             }
         }
-        // "allow" — kontynuuj normalnie
 
         // 1. Sprawdź czy to wywołanie narzędzia serwera MCP (format: "mcp__server__tool" lub server_name w args)
         if tool_name.starts_with("mcp__") {
@@ -508,7 +534,7 @@ impl Agent {
                 let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
                 plan.set_goal(goal);
                 plan.save(&self.work_dir)?;
-                Ok(format!("✅ Ustawiono cel planu: {}\nPlan zapisany w .opencode/plan.md — przetrwa restart UI.", plan.goal))
+                Ok(format!("✅ Ustawiono cel planu: {}\nPlan zapisany w .opencode-rs/plan.md — przetrwa restart UI.", plan.goal))
             }
             "plan_add_step" => {
                 let description = args.get("description").and_then(|v| v.as_str()).unwrap_or_default();
@@ -562,7 +588,7 @@ impl Agent {
                 let mut plan = crate::memory::ProjectPlan::load(&self.work_dir);
                 plan.clear();
                 plan.save(&self.work_dir)?;
-                Ok("✅ Wyczyszczono cały plan (.opencode/plan.md).".to_string())
+                Ok("✅ Wyczyszczono cały plan (.opencode-rs/plan.md).".to_string())
             }
             // ── Archival memory (wektorowa pamięć długoterminowa) ──────────
             "archival_search" => {
@@ -572,9 +598,7 @@ impl Agent {
                     return Err(anyhow::anyhow!("archival_search wymaga 'query' (tekst do wyszukania)"));
                 }
                 let am = crate::archival::ArchivalMemory::open(&self.work_dir)?;
-                let hits = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(am.search(query, top_k))
-                })?;
+                let hits = am.search(query, top_k).await?;
                 if hits.is_empty() {
                     return Ok("Brak wyników w archival memory.".to_string());
                 }
@@ -607,9 +631,7 @@ impl Agent {
                     created_at: chrono::Utc::now().to_rfc3339(),
                     source: "agent".to_string(),
                 };
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(am.add(&entry))
-                })?;
+                am.add(&entry).await?;
                 let count = am.count();
                 Ok(format!("✅ Zapisano w archival memory (id={id}). W bazie: {count} wpisów."))
             }
@@ -661,5 +683,23 @@ A teraz sprawdzę status:
         assert_eq!(calls[0].arguments["file_path"], "test.txt");
         assert_eq!(calls[1].name, "bash_exec");
         assert_eq!(calls[1].arguments["command"], "dir");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_call_deny() {
+        let dir = std::env::temp_dir().join(format!("opencode_perm_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).ok();
+        let cfg = crate::config::AppConfig::for_tests();
+        let router = Arc::new(ProviderRouter::new(cfg, dir.clone()));
+        let mut agent = Agent::new(router, dir.clone());
+        agent.permissions = Some(crate::opencode_compat::PermissionConfig {
+            edit: Some("deny".into()),
+            bash: Some("allow".into()),
+            webfetch: Some("allow".into()),
+        });
+        let args = serde_json::json!({"file_path": "x.txt", "content": "hi"});
+        let err = agent.execute_tool_call("write_file", &args).await.unwrap_err();
+        assert!(err.to_string().contains("zablokowane"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

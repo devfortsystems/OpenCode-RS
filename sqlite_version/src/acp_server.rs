@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
+use tokio::task::AbortHandle;
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
@@ -43,6 +44,9 @@ struct AcpSession {
 
 /// Współdzielony stan serwera ACP — mapuje session_id → sesja.
 type SessionMap = Arc<Mutex<HashMap<String, AcpSession>>>;
+/// Bieżące taski `session/prompt` — `session/cancel` abortuje po session_id.
+/// Krotka: (AbortHandle dla prompt_task, AbortHandle dla streamer_task).
+type PromptAborts = Arc<Mutex<HashMap<String, (AbortHandle, AbortHandle)>>>;
 
 /// Punkt wejścia serwera ACP — uruchamiany przez `opencode --acp`.
 ///
@@ -58,6 +62,7 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
 
     // Stan sesji — współdzielony między handlerami przez Arc<Mutex>
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let prompt_aborts: PromptAborts = Arc::new(Mutex::new(HashMap::new()));
 
     // Router + Agent opencode-rs — do wykonywania promptów
     let router = Arc::new(ProviderRouter::new(config.clone(), work_dir.clone()));
@@ -67,6 +72,8 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
     let sessions_new = sessions.clone();
     let sessions_prompt = sessions.clone();
     let agent_prompt = agent.clone();
+    let aborts_prompt = prompt_aborts.clone();
+    let aborts_cancel = prompt_aborts.clone();
 
     Agent
         .builder()
@@ -157,19 +164,29 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
                     full_response
                 });
 
-                // Wykonaj prompt przez agenta opencode-rs (ReAct loop z tools)
-                let result = agent_prompt
-                    .process_user_prompt(
-                        &active_model,
-                        &agent_mode,
-                        &history,
-                        &prompt_text,
-                        token_tx,
-                        ctx_tx,
-                    )
-                    .await;
+                // Wykonaj prompt w osobnym tasku — session/cancel abortuje AbortHandle
+                let agent_for_task = agent_prompt.clone();
+                let prompt_for_task = prompt_text.clone();
+                let prompt_task = tokio::spawn(async move {
+                    agent_for_task
+                        .process_user_prompt(
+                            &active_model,
+                            &agent_mode,
+                            &history,
+                            &prompt_for_task,
+                            token_tx,
+                            ctx_tx,
+                        )
+                        .await
+                });
+                {
+                    let mut aborts = aborts_prompt.lock().await;
+                    aborts.insert(session_id_str.clone(), (prompt_task.abort_handle(), streamer.abort_handle()));
+                }
+                let result = prompt_task.await;
+                aborts_prompt.lock().await.remove(&session_id_str);
 
-                // Czekaj na zakończenie streamera
+                // Czekaj na zakończenie streamera (token_tx dropnięty → recv kończy się)
                 let full_response = streamer.await.unwrap_or_default();
 
                 // Zapisz historię sesji
@@ -188,7 +205,9 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
                 }
 
                 let stop_reason = match result {
-                    Ok(_) => StopReason::EndTurn,
+                    Ok(Ok(_)) => StopReason::EndTurn,
+                    Ok(Err(_)) => StopReason::Refusal,
+                    Err(join_err) if join_err.is_cancelled() => StopReason::Cancelled,
                     Err(_) => StopReason::Refusal,
                 };
                 responder.respond(PromptResponse::new(stop_reason))
@@ -198,9 +217,23 @@ pub async fn run_acp_server(work_dir: PathBuf) -> Result<()> {
         // ── Handler: session/cancel (notification) ───────────────────────────
         // Klient anuluje bieżący prompt.
         .on_receive_notification(
-            async move |_notif: CancelNotification, _cx| {
-                // Na razie tylko logujemy — pełna anulacja wymagałaby CancellationToken
-                // w process_user_prompt. TODO: dodać cancellation support.
+            async move |notif: CancelNotification, cx| {
+                let session_id = notif.session_id.0.to_string();
+                eprintln!("🛑 ACP session/cancel received for session_id={}", session_id);
+                if let Some((prompt_handle, streamer_handle)) = aborts_cancel.lock().await.remove(&session_id) {
+                    // Wyślij ostatni chunk informujący o anulowaniu
+                    let cancel_notif = SessionNotification::new(
+                        SessionId::new(session_id.clone()),
+                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                            ContentBlock::Text(TextContent::new("\n\n⏹️ **Anulowano przez użytkownika (session/cancel).**\n".to_string())),
+                        )),
+                    );
+                    let _ = cx.send_notification(cancel_notif);
+
+                    prompt_handle.abort();
+                    streamer_handle.abort();
+                    eprintln!("🛑 ACP aborted prompt_task + streamer_task for session_id={}", session_id);
+                }
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),

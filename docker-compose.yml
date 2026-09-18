@@ -1,0 +1,17 @@
+services:
+  opencode:
+    build: .
+    container_name: opencode-ide
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./:/workspace
+      - opencode-data:/root/.opencode-rs
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+
+volumes:
+  opencode-data:

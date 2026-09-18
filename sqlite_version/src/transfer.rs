@@ -208,12 +208,12 @@ pub fn parse_remote_path(spec: &str) -> Result<(SshTarget, String)> {
 
 // ─── Dropzone watcher ───────────────────────────────────────────────
 
-/// Zwraca ścieżkę dropzone: `~/.opencode/dropzone/`.
+/// Zwraca ścieżkę dropzone: `~/.opencode-rs/dropzone/`.
 pub fn dropzone_dir() -> PathBuf {
     if let Some(base) = directories::BaseDirs::new() {
-        base.home_dir().join(".opencode").join("dropzone")
+        base.home_dir().join(".opencode-rs").join("dropzone")
     } else {
-        PathBuf::from(".opencode").join("dropzone")
+        PathBuf::from(".opencode-rs").join("dropzone")
     }
 }
 

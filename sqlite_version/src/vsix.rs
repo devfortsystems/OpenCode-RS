@@ -1,6 +1,6 @@
 //! VsixManager — instalator i obsługa rozszerzeń Visual Studio Code (.vsix).
 //!
-//! Rozpakowuje pliki .vsix (archiwa zip) do ~/.opencode/extensions/<name>/
+//! Rozpakowuje pliki .vsix (archiwa zip) do ~/.opencode-rs/extensions/<name>/
 //! i ekstrahuje:
 //! 1. Motywy kolorystyczne (contributes.themes) → wstrzykuje do palety motywów TUI/Web
 //! 2. Języki i serwery LSP (contributes.languages) → konfiguruje wbudowanego klienta LSP
@@ -54,11 +54,11 @@ pub struct VsixSnippetEntry {
 pub struct VsixManager;
 
 impl VsixManager {
-    /// Zwraca katalog instalacji rozszerzeń: ~/.opencode/extensions
+    /// Zwraca katalog instalacji rozszerzeń: ~/.opencode-rs/extensions
     pub fn extensions_dir() -> PathBuf {
         directories::BaseDirs::new()
-            .map(|b| b.home_dir().join(".opencode").join("extensions"))
-            .unwrap_or_else(|| PathBuf::from(".opencode/extensions"))
+            .map(|b| b.home_dir().join(".opencode-rs").join("extensions"))
+            .unwrap_or_else(|| PathBuf::from(".opencode-rs/extensions"))
     }
 
     /// Instaluje plik `.vsix` do katalogu rozszerzeń OpenCode-RS
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_extensions_dir_path() {
         let dir = VsixManager::extensions_dir();
-        assert!(dir.to_string_lossy().contains(".opencode"));
+        assert!(dir.to_string_lossy().contains(".opencode-rs"));
     }
 
     #[test]

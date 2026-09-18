@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -30,9 +31,14 @@ pub enum AppEvent {
     ContextUpdate(usize, usize),
     StatusNotification(String),
     ModelsDiscovered(Vec<(String, String, String)>),
-    /// Żądanie uprawnienia od agenta (tool_name, args_summary) — TUI pyta użytkownika.
-    /// Odpowiedź przez AppEvent::PermissionResponse.
-    PermissionRequest(String, String),
+    /// Mapa dostępności providerów w runtime (tag → bool).
+    /// Wywoływane raz przy starcie asynchronicznie (5-8s: antigravity check 3s,
+    /// opencode models 6-17s itp). Używane w `filtered_models()` żeby ukryć
+    /// modele do których nie da się połączyć (np. antigravity gdy brak IDE).
+    ProvidersAvailability(HashMap<String, bool>),
+    /// Żądanie uprawnienia od agenta (tool_name, args_summary, oneshot).
+    /// TUI pyta użytkownika; Enter/Esc wysyła true/false przez oneshot.
+    PermissionRequest(String, String, tokio::sync::oneshot::Sender<bool>),
     /// Odpowiedź użytkownika na żądanie uprawnienia (true = allow, false = deny).
     PermissionResponse(bool),
     /// Zdarzenie modyfikacji pliku przez agenta (edit_file / write_file)
@@ -123,6 +129,43 @@ pub struct App {
     pub cached_branch: String,
     pub cached_stack: String,
     pub cached_tokens_and_cost: (usize, usize, usize, String),
+
+    /// ══════════════════════════════════════════════════════════════
+    /// Debounce zapisu sesji — minimum 2s między kolejnymi zapisami
+    /// do DevFortDB / pliku JSON. Poprzednio: na każdy Enter / /komendę
+    /// → 26 wywołań save_current_session = clone 50MB messages + fsync
+    /// na dysk → blokada UI przez 5-30ms. Teraz: zapis tylko jeśli
+    /// minęły 2s od ostatniego (lub Ctrl+C / exit FORCE save).
+    /// ══════════════════════════════════════════════════════════════
+    pub last_session_save: Option<std::time::Instant>,
+
+    /// Kolejka oczekujących promptów — użytkownik nacisnął Enter podczas
+    /// gdy poprzedni request wciąż streamuje. Po StreamFinished z Agentem
+    /// automatycznie submitujemy kolejny prompt z tej kolejki. Dzięki temu
+    /// UI ZAWSZE REAGUJE: użytkownik może pisać i wysyłać zapytania w
+    /// dowolnym momencie, nie musi czekać aż agent skończy (scenariusz
+    /// "napisz 5 rzeczy po kolei, nie czekając na odpowiedzi").
+    pub pending_prompts: Vec<String>,
+
+    /// Debounce draft auto-save podczas pisania: zapis input_text do
+    /// current_session co 800ms (nie na każdą literkę = nie fsync co znak).
+    pub last_draft_save: Option<std::time::Instant>,
+
+    /// Po StreamFinished / StreamError, jeśli pending_prompts nie jest pusty,
+    /// wkładamy tutaj pierwszy z kolejki. main.rs select! po wywołaniu
+    /// handle_app_event sprawdza to pole, a jeśli jest Some — submituje
+    /// (await submit_prompt). Robimy to w main.rs bo submit_prompt jest
+    /// async, a handle_app_event jest sync.
+    pub pending_next_submit: Option<String>,
+
+    /// Mapa dostępności providerów w runtime (tag → bool). Np.
+    /// `provider_availability["antigravity"] = false` oznacza że user nie ma
+    /// zainstalowanego Antigravity IDE → modele antigravity-* NIE SĄ pokazywane
+    /// w pickerze (poza fav). Wypełniana raz przy starcie asynchronicznie
+    /// przez `ProviderRouter::runtime_provider_availability_map()`, event
+    /// `AppEvent::ProvidersAvailability`. Do momentu wypełnienia = pusta mapa
+    /// → domyślnie pokazuj wszystko (nie blokuj UI na start).
+    pub provider_availability: HashMap<String, bool>,
 }
 
 impl App {
@@ -169,6 +212,18 @@ impl App {
             tokio::spawn(async move {
                 let discovered = router_bg.discover_models().await;
                 let _ = tx_bg.send(AppEvent::ModelsDiscovered(discovered)).await;
+            });
+
+            // Drugi task: runtime availability providerów (antigravity, CLI,
+            // direct API keys, Ollama/LMStudio/Llama, Bridge 3 porty).
+            // Wypełnia App.provider_availability przez event ProvidersAvailability.
+            // Nie blokuje startu UI (mapa jest pusta na początku → domyślnie
+            // wszystko pokazujemy, po ~5-8s filtr się aktywuje).
+            let router_bg2 = router.clone();
+            let tx_bg2 = event_tx.clone();
+            tokio::spawn(async move {
+                let avail = router_bg2.runtime_provider_availability_map().await;
+                let _ = tx_bg2.send(AppEvent::ProvidersAvailability(avail)).await;
             });
         }
 
@@ -254,6 +309,11 @@ impl App {
             cached_branch,
             cached_stack,
             cached_tokens_and_cost: (0, 128_000, 0, "$0.00".to_string()),
+            last_session_save: None,
+            pending_prompts: Vec::new(),
+            last_draft_save: None,
+            pending_next_submit: None,
+            provider_availability: HashMap::new(),
         };
         app.refresh_tokens_and_cost();
         app
@@ -382,15 +442,40 @@ impl App {
         let tabs = Self::model_provider_tabs();
         let (_, tag) = tabs[self.model_filter_index % tabs.len()];
 
-        // Użyj modeli dynamicznie wykrytych, a jeśli jeszcze nie gotowe — modeli bazowych
-        let source_models = if !self.dynamic_models.is_empty() {
-            self.dynamic_models.clone()
-        } else {
-            self.available_models
-                .iter()
-                .map(|(id, name, prov)| (id.to_string(), name.to_string(), prov.to_string()))
-                .collect()
-        };
+        // ═══════════════════════════════════════════════════════════════
+        // ROOT FIX: ZAWSZE ŁĄCZ MODELE STATYCZNE (z get_available_models)
+        // Z MODELEM DYNAMICZNYMI (opencode-acp/*, kilo-run/*, antigravity-*,
+        // mostek /v1/models — 8766).
+        //
+        // Poprzednio: if !dynamic_models.is_empty() { TYLKO dynamiczne }
+        // else { TYLKO statyczne }. Skutek:
+        //   - Skróty statyczne (opencode-zen, opencode-go, kilo-run-free,
+        //     gemini-3.7-flash, ...) były USUWANE gdy discover_models zwrócił
+        //     jakiekolwiek modele (127 opencode-acp).
+        //   - Modelki Bridge (opencode-*, cursor-*, trae-*, windsurf-*,
+        //     copilot-* z mostka 8766) też były scalane z dynamicznymi,
+        //     ale shortcuty statyczne NIE.
+        //
+        // Teraz: SCALAMY OBIECI (statyczny + dynamiczny) z dedupem seen_ids
+        // na końcu (dynamiczne mają pierwszeństwo jeśli konflikt ID).
+        // ═══════════════════════════════════════════════════════════════
+        let mut seen = std::collections::HashSet::new();
+        let mut source_models: Vec<(String, String, String)> = Vec::new();
+
+        // Najpierw dynamiczne — jeśli istnieją, mają pierwszeństwo (dokładniejsze display names)
+        for (id, name, prov) in self.dynamic_models.iter() {
+            if seen.insert(id.clone()) {
+                source_models.push((id.clone(), name.clone(), prov.clone()));
+            }
+        }
+        // Następnie statyczne (skróty opencode-zen, opencode-go, kilo-run-free,
+        // gemini-3.7-flash, direct API providers, ...)
+        for (id, name, prov) in self.available_models.iter() {
+            let id_s = id.to_string();
+            if seen.insert(id_s.clone()) {
+                source_models.push((id_s, name.to_string(), prov.to_string()));
+            }
+        }
 
         source_models
             .into_iter()
@@ -403,11 +488,90 @@ impl App {
                     // OpenCode Go — namespace z opencode models (opencode-acp/opencode-go/*)
                     id.contains("opencode-go/") || id == "opencode-go"
                 } else if tag == "opencode-zen" {
-                    // OpenCode Zen — namespace opencode/ (bez opencode-go/), plus skrót
+                    // OpenCode Zen — shortcut + wszystkie opencode/ (bez opencode-go)
                     id == "opencode-zen" || (id.contains("opencode-acp/opencode/") && !id.contains("opencode-go/"))
                 } else {
                     prov == tag
                 }
+            })
+            // ═══════════════════════════════════════════════════════════════
+            // OSTATNI FILTR: Runtime availability providerów.
+            //
+            // User request VERBATIM: "co do modeli to wystarcza takie do
+            // których da się połączyć czyli user nie ma antygravity to nie
+            // wyświetla antygravity".
+            //
+            // Logika 1:1 jak Web Companion w main.rs:1040-1091.
+            // - Ulubione (tag == "fav") ZAWSZE pokazujemy, nawet jeśli offline.
+            // - Jeśli mapa provider_availability jest jeszcze pusta (async task
+            //   ProvidersAvailability jeszcze nie dotarł przy starcie) →
+            //   domyślnie pokazuj wszystko — nie blokuj użytkownikowi UI
+            //   na 5-8s podczas startu.
+            // - Jeśli mapa jest wypełniona → ukryj wszystkie modele których
+            //   provider tag ma wartość false (antigravity=false,
+            //   ollama=false bo Ollama nie działa na :11434, itp).
+            // ═══════════════════════════════════════════════════════════════
+            .filter(|(id, _, prov)| {
+                if tag == "fav" {
+                    return true; // ★ Ulubione ZAWSZE widoczne, nawet jeśli offline
+                }
+                // Oblicz runtime tag providera (taka sama logika jak w
+                // main.rs Web Companion filter + ProviderRouter map keys).
+                let p = prov.to_lowercase();
+                let m = id.to_lowercase();
+                let runtime_tag: String = if p == "antigravity" || m.contains("antigravity") {
+                    "antigravity".to_string()
+                } else if ProviderRouter::cli_binary_for_provider(prov).is_some() {
+                    // Provider który ma binarkę CLI. Użyj dokładnego tagu jak
+                    // w runtime_provider_availability_map() cli_tag_map:
+                    // opencode-acp, kilo-run, cline-cli, gemini-cli, gemini-acp,
+                    // claude-code-cli, claude-code-acp, codex-cli, codex-acp,
+                    // aider-cli, devin-cli, devin-acp.
+                    match p.as_str() {
+                        "opencode-acp" | "opencode-zen" | "opencode-go" => p.clone(),
+                        "kilo-run" | "cline-cli" | "gemini-cli" | "gemini-acp" |
+                        "claude-code-cli" | "claude-code-acp" | "codex-cli" | "codex-acp" |
+                        "aider-cli" | "devin-cli" | "devin-acp" | "devin-cloud" => p.clone(),
+                        // Inne CLI: spróbuj też dopasować po prov
+                        other if other.contains("opencode") => "opencode-acp".to_string(),
+                        other if other.contains("kilo") => "kilo-run".to_string(),
+                        other if other.contains("devin") => "devin-cli".to_string(),
+                        other if other.contains("gemini") => "gemini-cli".to_string(),
+                        other if other.contains("claude") => "claude-code-cli".to_string(),
+                        other if other.contains("codex") => "codex-cli".to_string(),
+                        other if other.contains("aider") => "aider-cli".to_string(),
+                        other if other.contains("cline") => "cline-cli".to_string(),
+                        _ => prov.clone(),
+                    }
+                } else if p.contains("kilo") {
+                    "kilo-run".to_string()
+                } else if p.contains("opencode") {
+                    // opencode-zen, opencode-go są w tagach specjalnych, tu łapiemy resztę
+                    if id == "opencode-zen" { "opencode-zen".to_string() }
+                    else if id == "opencode-go" { "opencode-go".to_string() }
+                    else { "opencode-acp".to_string() }
+                } else if ["openai", "anthropic", "gemini", "openrouter", "deepseek", "groq", "mistral", "devin-cloud"].contains(&p.as_str()) {
+                    p.clone()
+                } else if p == "ollama" || m.contains("ollama") {
+                    "ollama".to_string()
+                } else if p == "lmstudio" || m.contains("lmstudio") {
+                    "lmstudio".to_string()
+                } else if p == "llamacpp" || m.contains("llamacpp") {
+                    "llamacpp".to_string()
+                } else if ["cursor", "windsurf", "trae", "copilot", "amazon-q", "augment"].contains(&p.as_str()) {
+                    // Wszystkie bridge modele używają jednego health checku (3 porty)
+                    let bridge_tags = ["cursor", "windsurf", "trae", "copilot", "amazon-q", "augment"];
+                    bridge_tags.iter().find(|t| **t == p.as_str()).unwrap_or(&"bridge").to_string()
+                } else if p == "commandcode" {
+                    "commandcode".to_string()
+                } else {
+                    // Nieznany provider — domyślnie pokazuj
+                    prov.clone()
+                };
+
+                // Sprawdź mapę. Jeśli mapa pusta (async jeszcze nie dotarł) →
+                // unwrap_or(true) = DOMYŚLNIE POKAZUJ, nie blokuj UI.
+                self.provider_availability.get(&runtime_tag).copied().unwrap_or(true)
             })
             .collect()
     }
@@ -422,10 +586,41 @@ impl App {
     }
 
     pub fn save_current_session(&mut self) {
+        self.save_current_session_inner(false);
+    }
+
+    /// Wymuś zapis sesji IGNORUJĄC debounce 2s — używaj TYLKO przy wyjściu
+    /// z aplikacji (Ctrl+C / exit keybind), żeby nie stracić ostatnich zmian.
+    pub fn save_current_session_forced(&mut self) {
+        self.save_current_session_inner(true);
+    }
+
+    fn save_current_session_inner(&mut self, force: bool) {
+        use std::time::Instant;
+
+        // ROOT FIX #2: Debounce zapisu sesji na minimum 2s między kolejnymi
+        // zapisami. Poprzednio: na każdy Enter / /komendę / zmianę karty /
+        // model picker → 26 wywołań w 5s → 26× clone(self.messages) +
+        // 26× DevFortDB write (fsync na dysk) → każdy zapis blokował UI
+        // na 5-30ms = percepcja "wolnej reakcji" TUI.
+        //
+        // Teraz: zapis co NAJMNIEJ 2000ms od poprzedniego, chyba że force=true
+        // (Ctrl+C / exit). Przy zwykłym użytkowaniu: 1 zapis / 2-30s zamiast
+        // 26 zapisów / 5s — I/O zredukowane ~50×.
+        if !force {
+            if let Some(last) = self.last_session_save {
+                if last.elapsed().as_millis() < 2000 {
+                    return; // za wcześnie — pomiń zapis, nie blokuj UI
+                }
+            }
+        }
+
+        // Rzeczywisty zapis (messages.clone + DevFortDB write)
         self.current_session.messages = self.messages.clone();
         self.current_session.updated_at = Utc::now().to_rfc3339();
         self.current_session.model = self.active_model.clone();
         self.session_manager.save_session(&self.current_session).ok();
+        self.last_session_save = Some(Instant::now());
     }
 
     /// Odświeża estymację tokenów i kosztów (wywoływane tylko przy zmianie wiadomości/modelu, a NIE na każdą klatkę)
@@ -481,6 +676,45 @@ impl App {
             return Ok(false);
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // GWARANCJA: ZAWSZE MOŻESZ PRZERWAĆ — globalne skróty PRZED WSZYSTKIM.
+        //
+        // Poprzednio 5 miejsc blokowało cancel podczas streamu:
+        //  1. Permission Dialog (CAŁA RESZTA return Ok(false) → Esc nie anulował streamu!)
+        //  2. match_keybind (exit/sidebar/... return Ok zanim doszło do cancel)
+        //  3. Theme picker (Esc → tylko zamknij picker, NIE cancel)
+        //  4. Model picker (Esc → tylko zamknij picker, NIE cancel)
+        //  5. File manager / sessions palette / command palette — analogicznie.
+        //
+        // TERAZ: NA SAMYM POCZĄTKU, przed permission dialog, przed keybindami,
+        // przed pickerami — sprawdzamy globalne cancel i WYWOŁUJEMY cancel_streaming,
+        // ALE NIE ROBIMY return Ok(false). Dzięki temu JEDEN klawisz Esc robi
+        // OBYDWIE RZECZY NARAZ: (1) przerwa stream agenta, (2) zamknie aktywny
+        // picker / dialog / menu / permission request zgodnie z dalszym kodem.
+        // ═══════════════════════════════════════════════════════════════
+        match (key.modifiers, key.code) {
+            // Esc: jeśli stream w toku → natychmiast przerwij (dalszy kod zamknie picker/dialog)
+            (KeyModifiers::NONE, KeyCode::Esc) if self.is_streaming => {
+                self.cancel_streaming("Przerwano przez użytkownika (Esc)");
+            }
+            // Ctrl+Shift+Esc: WYMUSZONE przerwanie (zawsze działa, nawet jeśli agent
+            // nie odpowiada i Esc zwykły nie daje rady). Działa BEZ WZGLĘDU na is_streaming.
+            (m, KeyCode::Esc)
+                if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
+            {
+                if self.is_streaming || self.agent_abort.is_some() {
+                    self.cancel_streaming("Wymuszone przerwanie (Ctrl+Shift+Esc)");
+                }
+            }
+            // Ctrl+.: natychmiastowy cancel (alternatywa dla Esc, łatwiejsza dla niektórych użytkowników)
+            (m, KeyCode::Char('.')) if m.contains(KeyModifiers::CONTROL) => {
+                if self.is_streaming || self.agent_abort.is_some() {
+                    self.cancel_streaming("Przerwano przez użytkownika (Ctrl+.)");
+                }
+            }
+            _ => {}
+        }
+
         // Jeśli aktywny dialog uprawnień — przechwyć Enter (allow) i Esc (deny)
         if self.permission_dialog.is_some() {
             match key.code {
@@ -492,9 +726,13 @@ impl App {
                 KeyCode::Esc => {
                     let _ = self.event_tx.send(AppEvent::PermissionResponse(false)).await;
                     self.permission_dialog = None;
+                    // Esc podczas permission dialogu też = pewny signal użytkownik chce przerwać
+                    if self.is_streaming {
+                        self.cancel_streaming("Przerwano przez użytkownika (Esc przy uprawnieniach)");
+                    }
                     return Ok(false);
                 }
-                _ => return Ok(false), // ignoruj inne klawisze podczas dialogu
+                _ => return Ok(false),
             }
         }
 
@@ -502,7 +740,7 @@ impl App {
         // Jeśli keybind jest zdefiniowany dla akcji, użyj go zamiast hardcoded
         if let Some(action) = self.match_keybind(&key) {
             match action.as_str() {
-                "exit" => { self.save_current_session(); return Ok(true); }
+                "exit" => { self.save_current_session_forced(); return Ok(true); }
                 "sidebar" => { self.show_sidebar = !self.show_sidebar; return Ok(false); }
                 "theme_picker" => { self.show_theme_picker = !self.show_theme_picker; return Ok(false); }
                 "command_palette" => { self.show_command_palette = !self.show_command_palette; self.palette_query.clear(); self.palette_index = 0; self.filtered_palette = CommandPalette::get_all(); return Ok(false); }
@@ -516,9 +754,9 @@ impl App {
             }
         }
 
-        // Wyjście Ctrl+C -> zapisz sesję i wyjdź
+        // Wyjście Ctrl+C -> zapisz sesję (FORCE, ignorując debounce) i wyjdź
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.save_current_session();
+            self.save_current_session_forced();
             return Ok(true);
         }
 
@@ -691,7 +929,10 @@ impl App {
         if self.show_theme_picker {
             let themes = AppTheme::list_all();
             match key.code {
-                KeyCode::Esc => self.show_theme_picker = false,
+                KeyCode::Esc => {
+                    self.show_theme_picker = false;
+                    self.theme_picker_index = 0; // FIX — reset indeksu przy zamknięciu
+                }
                 KeyCode::Up => {
                     if self.theme_picker_index > 0 {
                         self.theme_picker_index -= 1;
@@ -715,6 +956,7 @@ impl App {
                         }
                     }
                     self.show_theme_picker = false;
+                    self.theme_picker_index = 0; // FIX — reset po wyborze
                 }
                 _ => {}
             }
@@ -724,7 +966,11 @@ impl App {
         // Modalne okno Palety Komend (Ctrl+P)
         if self.show_command_palette {
             match key.code {
-                KeyCode::Esc => self.show_command_palette = false,
+                KeyCode::Esc => {
+                    self.show_command_palette = false;
+                    self.palette_index = 0; // FIX — reset indeksu
+                    self.palette_query.clear();
+                }
                 KeyCode::Up => {
                     if self.palette_index > 0 {
                         self.palette_index -= 1;
@@ -738,6 +984,7 @@ impl App {
                 KeyCode::Backspace => {
                     if self.palette_query.is_empty() {
                         self.show_command_palette = false;
+                        self.palette_index = 0; // FIX — reset przy wyjściu Backspace
                     } else {
                         self.palette_query.pop();
                         self.refresh_palette_filter();
@@ -748,25 +995,28 @@ impl App {
                     self.refresh_palette_filter();
                 }
                 KeyCode::Enter => {
+                    let mut cmd_to_set: Option<&'static str> = None;
                     if let Some(item) = self.filtered_palette.get(self.palette_index) {
                         let cmd = item.command;
                         self.show_command_palette = false;
+                        self.palette_index = 0; // FIX — reset po wyborze
+                        self.palette_query.clear();
 
                         match cmd {
                             "/search" => {
-                                self.input_text = "/search ".to_string();
+                                cmd_to_set = Some("/search ");
                             }
                             "/ssh" => {
-                                self.input_text = "/ssh ".to_string();
+                                cmd_to_set = Some("/ssh ");
                             }
                             "/scp" => {
-                                self.input_text = "/scp ".to_string();
+                                cmd_to_set = Some("/scp ");
                             }
                             "/dropzone" => {
-                                self.input_text = "/dropzone ".to_string();
+                                cmd_to_set = Some("/dropzone ");
                             }
                             "/remote" | "/remotes" => {
-                                self.input_text = "/remote add private ".to_string();
+                                cmd_to_set = Some("/remote add private ");
                             }
                             "/files" => {
                                 self.file_manager.refresh_all();
@@ -787,6 +1037,9 @@ impl App {
                                 self.submit_prompt(cmd.to_string()).await?;
                             }
                         }
+                    }
+                    if let Some(s) = cmd_to_set.take() {
+                        self.input_text = s.to_string();
                     }
                 }
                 _ => {}
@@ -948,13 +1201,18 @@ impl App {
             return Ok(false);
         }
 
-        // Modalne okno wyboru modelu (Ctrl+M)
+        // Modalne okno wyboru modeli (Ctrl+M)
         if self.show_model_picker {
             let filtered = self.filtered_models();
             let total_tabs = Self::model_provider_tabs().len();
 
             match key.code {
-                KeyCode::Esc => self.show_model_picker = false,
+                KeyCode::Esc => {
+                    self.show_model_picker = false;
+                    // FIX: reset indeksu przy zamknięciu — zapobiega out-of-range przy
+                    // kolejnym otwarciu jeśli karta filtrująca ma MNIEJ modeli (np. fav=0).
+                    self.model_picker_index = 0;
+                }
                 KeyCode::Left | KeyCode::BackTab | KeyCode::Char('[') => {
                     self.model_filter_index = if self.model_filter_index > 0 {
                         self.model_filter_index - 1
@@ -998,6 +1256,7 @@ impl App {
                         self.save_current_session();
                     }
                     self.show_model_picker = false;
+                    self.model_picker_index = 0; // FIX — reset indeksu przy wyborze
                 }
                 _ => {}
             }
@@ -1007,7 +1266,10 @@ impl App {
         // Modalne okno historii sesji (Ctrl+H)
         if self.show_session_picker {
             match key.code {
-                KeyCode::Esc => self.show_session_picker = false,
+                KeyCode::Esc => {
+                    self.show_session_picker = false;
+                    self.session_picker_index = 0; // FIX — reset przy zamknięciu
+                }
                 KeyCode::Up => {
                     if self.session_picker_index > 0 {
                         self.session_picker_index -= 1;
@@ -1024,6 +1286,7 @@ impl App {
                         self.load_session_by_id(&id);
                     }
                     self.show_session_picker = false;
+                    self.session_picker_index = 0; // FIX — reset po wyborze
                 }
                 KeyCode::Delete | KeyCode::Char('d') => {
                     if let Some(meta) = self.available_sessions.get(self.session_picker_index) {
@@ -1040,13 +1303,23 @@ impl App {
             return Ok(false);
         }
 
-        // Podczas streamingu: Esc anuluje, Ctrl+C już obsłużone wyżej, reszta zablokowana
-        if self.is_streaming {
-            if key.code == KeyCode::Esc {
-                self.cancel_streaming("Anulowano przez użytkownika (Esc)");
-            }
-            return Ok(false);
-        }
+        // ══════════════════════════════════════════════════════════════
+        // UI ZAWSZE REAGUJE: NIE BLOKUJEMY NICZEGO podczas streamingu.
+        //
+        // Poprzednio (L1109-1115): przy is_streaming=true pozwalaliśmy
+        // TYLKO na Esc anulujące i ZWRACALIŚMY natychmiast return =
+        // użytkownik nie mógł pisać kolejnego promptu, przewijać czatu,
+        // otworzyć eksploratora (Ctrl+E/F3 IDE), przełączyć modeli
+        // (Ctrl+K/P/M) podczas gdy agent generował. Najczęstszy
+        // scenariusz UX: "napisz proszę X, a jeszcze dodaj Y" — musiał
+        // czekać 30-120s aż agent skończy zanim pisał Y.
+        //
+        // Teraz: WSZYSTKO dozwolone podczas streamingu. Jedyne co robimy
+        // inaczej przy is_streaming=true + Enter: zamiast wywoływać
+        // submit_prompt (który ustawia is_streaming=true od nowa i
+        // spawnuje nowego agenta), wrzucamy prompt do kolejki
+        // `pending_prompts` i pokazujemy użytkownikowi notkę.
+        // ══════════════════════════════════════════════════════════════
 
         // Wprowadzanie tekstu, nawigacja historii i zaawansowane przewijanie
         match key.code {
@@ -1067,7 +1340,6 @@ impl App {
             }
             KeyCode::Up => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT) {
-                    // Płynne przewijanie czatu w górę o 3 linie
                     self.scroll_offset = self.scroll_offset.saturating_add(3);
                 } else if !self.prompt_history.is_empty() {
                     let next_idx = match self.history_index {
@@ -1082,7 +1354,6 @@ impl App {
             }
             KeyCode::Down => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT) {
-                    // Płynne przewijanie czatu w dół o 3 linie
                     self.scroll_offset = self.scroll_offset.saturating_sub(3);
                 } else if let Some(i) = self.history_index {
                     if i + 1 < self.prompt_history.len() {
@@ -1097,29 +1368,45 @@ impl App {
                     }
                 }
             }
-            KeyCode::PageUp => {
-                // Skok o pół strony w górę
-                self.scroll_offset = self.scroll_offset.saturating_add(8);
-            }
-            KeyCode::PageDown => {
-                // Skok o pół strony w dół
-                self.scroll_offset = self.scroll_offset.saturating_sub(8);
-            }
-            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Skok na samą górę historii
-                self.scroll_offset = 10_000;
-            }
-            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Skok na sam dół (najnowsze wiadomości)
-                self.scroll_offset = 0;
-            }
+            KeyCode::PageUp => { self.scroll_offset = self.scroll_offset.saturating_add(8); }
+            KeyCode::PageDown => { self.scroll_offset = self.scroll_offset.saturating_sub(8); }
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => { self.scroll_offset = 10_000; }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => { self.scroll_offset = 0; }
             KeyCode::Enter => {
                 let prompt = self.input_text.trim().to_string();
                 if !prompt.is_empty() {
-                    self.prompt_history.push(prompt.clone());
-                    self.history_index = None;
-                    self.scroll_offset = 0; // Przywróć widok na sam dół przy nowej wiadomości
-                    self.submit_prompt(prompt).await?;
+                    if self.is_streaming {
+                        // UI ZAWSZE REAGUJE: Enter podczas streamingu → dodaj do kolejki pending_prompts
+                        // ALE najpierw sanity check: odrzuć wklejone zrzuty ekranu (box draw / za długie).
+                        if looks_like_ui_paste_junk(&prompt) {
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: "🚫 Ignorowano wpis do kolejki: wygląda na wklejony zrzut ekranu (znaki ramek UI / za długi tekst). Jeśli chcesz wysłać długi tekst, poczekaj na koniec generowania agenta.".to_string(),
+                            });
+                            self.input_text.clear();
+                        } else {
+                            self.prompt_history.push(prompt.clone());
+                            self.history_index = None;
+                            self.scroll_offset = 0;
+                            self.pending_prompts.push(prompt.clone());
+                            let n = self.pending_prompts.len();
+                            self.messages.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!(
+                                    "📋 Dodano do kolejki (pozycja {n}): {}\n\
+                                     Agent skończy bieżący i automatycznie wykona ten następny.",
+                                    short_preview(&prompt, 120)
+                                ),
+                            });
+                            self.save_current_session();
+                            self.input_text.clear();
+                        }
+                    } else {
+                        self.prompt_history.push(prompt.clone());
+                        self.history_index = None;
+                        self.scroll_offset = 0;
+                        self.submit_prompt(prompt).await?;
+                    }
                 }
             }
             _ => {}
@@ -1215,7 +1502,7 @@ impl App {
         }
     }
 
-    async fn submit_prompt(&mut self, mut prompt: String) -> Result<()> {
+    pub async fn submit_prompt(&mut self, mut prompt: String) -> Result<()> {
         self.input_text.clear();
 
         // Jeśli to szablon (/refactor, /tests, /doc, /explain), rozwiń go
@@ -1313,6 +1600,25 @@ impl App {
     }
 
     fn start_agent_stream(&mut self, prompt: String) {
+        // Auto-kompresja długiej historii (przed dodaniem nowego promptu):
+        // Przy ~32k tokenach (typowo 20+ wiadomości) system+memory+plan+tools już zajmują ~16k,
+        // więc starsze wiadomości streszczamy. Użytkownik może też ręcznie /compact.
+        let auto_compact_at = 32_000usize; // poniżej połowy typowych 128k modeli
+        let tokens_now = crate::agent::context::ContextManager::estimate_tokens(&self.messages);
+        if tokens_now > auto_compact_at {
+            let compacted = crate::agent::context::ContextManager::compress_context_if_needed(
+                &mut self.messages,
+                auto_compact_at / 2,
+            );
+            if compacted {
+                eprintln!(
+                    "[context] auto-compact: ~{} tokens → ~{}",
+                    tokens_now,
+                    crate::agent::context::ContextManager::estimate_tokens(&self.messages)
+                );
+            }
+        }
+
         // Aktualizacja tytułu nowej sesji na podstawie promptu
         if self.current_session.title == "Nowy czat" {
             let clean_title: String = prompt.chars().take(40).collect();
@@ -1390,12 +1696,31 @@ impl App {
             });
             self.streaming_buffer.clear();
         }
-        // Komunikat o anulowaniu
+        // Komunikat o anulowaniu — jeśli bufor był pusty, dodaj też PEŁNĄ instrukcję diagnostyczną.
+        let cancel_msg = if self.messages.last().map(|m| m.role.as_str()) != Some("assistant") {
+            format!(
+                "\
+⏹️  {reason}
+
+Model: `{model}`. Co mogło pójść nie tak:
+  • Mostek Bridge: curl 127.0.0.1:8765/health; uruchom edytor z wtyczką bridge-extension.vsix
+  • Direct API: klucze w ~/.opencode-rs/auth.json → `opencode doctor`
+  • CLI: where.exe devin/gemini/claude → `opencode models`
+
+Spróbuj: (1) Ctrl+M → `opencode-acp/*` / `kilo-run/*` (darmowe). (2) `opencode doctor`.
+",
+                reason = reason,
+                model = self.active_model,
+            )
+        } else {
+            format!("⏹️  {reason}")
+        };
         self.messages.push(ChatMessage {
             role: "system".to_string(),
-            content: format!("⏹️  {reason}"),
+            content: cancel_msg,
         });
         self.save_current_session();
+        self.refresh_sessions_list();
     }
 
     /// Sprawdza czy streaming nie zawiesił się — wywoływane z timerem w event loop.
@@ -1529,7 +1854,7 @@ impl App {
                             Ok(extensions) if extensions.is_empty() => {
                                 self.messages.push(ChatMessage {
                                     role: "system".to_string(),
-                                    content: "📦 Brak zainstalowanych wtyczek VSIX w `~/.opencode/extensions/`.\nAby zainstalować wtyczkę: `/vsix install <ścieżka.vsix>`".to_string(),
+                                    content: "📦 Brak zainstalowanych wtyczek VSIX w `~/.opencode-rs/extensions/`.\nAby zainstalować wtyczkę: `/vsix install <ścieżka.vsix>`".to_string(),
                                 });
                             }
                             Ok(extensions) => {
@@ -1842,7 +2167,7 @@ impl App {
                 self.messages.push(ChatMessage { role: "system".to_string(), content: mb.palace_report() });
             }
             "/plan" => {
-                // Podgląd persistentnego planu projektu (.opencode/plan.md).
+                // Podgląd persistentnego planu projektu (.opencode-rs/plan.md).
                 // Bez argumentów — pokaż plan. Z argumentem "clear" — wyczyść.
                 let plan = crate::memory::ProjectPlan::load(&self.work_dir);
                 let sub = parts.get(1).copied().unwrap_or("");
@@ -1852,7 +2177,7 @@ impl App {
                     p.save(&self.work_dir).ok();
                     self.messages.push(ChatMessage {
                         role: "system".to_string(),
-                        content: "🧹 Wyczyszczono plan projektu (.opencode/plan.md).".to_string(),
+                        content: "🧹 Wyczyszczono plan projektu (.opencode-rs/plan.md).".to_string(),
                     });
                 } else if plan.goal.is_empty() && plan.steps.is_empty() && plan.notes.is_empty() {
                     self.messages.push(ChatMessage {
@@ -1868,7 +2193,7 @@ impl App {
                     };
                     self.messages.push(ChatMessage {
                         role: "system".to_string(),
-                        content: format!("📋 PLAN PROJEKTU (.opencode/plan.md){progress}\n\n{}", plan.to_markdown()),
+                        content: format!("📋 PLAN PROJEKTU (.opencode-rs/plan.md){progress}\n\n{}", plan.to_markdown()),
                     });
                 }
                 // Jeśli podano instrukcję (np. "/plan Zaplanuj migrację..."), wyślij do agenta
@@ -2724,7 +3049,7 @@ impl App {
                 } else {
                     self.messages.push(ChatMessage {
                         role: "system".to_string(),
-                        content: "🎙️ **Plugin Głosowy (Voice / STT Hook):**\nAby podpiąć plugin głosowy (np. Whisper), ustaw `voice_plugin_command` w `.opencode/config.json`.\nPrzykład: `\"voice_plugin_command\": \"whisper-cli --record\"`".to_string(),
+                        content: "🎙️ **Plugin Głosowy (Voice / STT Hook):**\nAby podpiąć plugin głosowy (np. Whisper), ustaw `voice_plugin_command` w `.opencode-rs/config.json`.\nPrzykład: `\"voice_plugin_command\": \"whisper-cli --record\"`".to_string(),
                     });
                 }
             }
@@ -3371,7 +3696,7 @@ impl App {
 • /update - Sprawdź aktualizacje GitHub\n\
 • /review - Inteligentny audyt bezpieczeństwa i jakości kodu\n\
 • /palace - Pełny drzewiasty podgląd stanu pamięci (Letta-style: blocks + skills)\n\
-• /plan - Podgląd/pisanie planu projektu (.opencode/plan.md, persistentny)\n\
+• /plan - Podgląd/pisanie planu projektu (.opencode-rs/plan.md, persistentny)\n\
 • /doctor - Audyt jakości pamięci (duplikaty, sekrety, rozmiar)\n\
 • /undo - Bezpieczne cofanie ostatnich zmian w repozytorium\n\
 • /search <zapytanie> - Wyszukiwarka dokumentacji w internecie\n\
@@ -3381,11 +3706,11 @@ impl App {
 • /auth (export-env | import-env | set) - Zarządzanie 1 plikiem .env\n\
 • /opencode - Diagnostyka danych oryginalnego OpenCode\n\
 • /autocheck [on|off] - Automatyczne sprawdzanie kompilacji projektu\n\
-• /agents - Lista agentów opencode + commandcode (.opencode/agents + .commandcode/agents)\n\
-• /agent <nazwa> - Przełącz na agenta (jego model + prompt + permission)\n\
-• /commands - Lista komend opencode + commandcode (.opencode/commands + .commandcode/commands)\n\
-• /mods - Lista modów CommandCode (.commandcode/mods/*.ts)\n\
-• /plugins - Lista pluginów opencode (.opencode/plugins/*.js|ts)\n\
+• /agents - Lista agentów opencode + commandcode (.opencode-rs/agents + .commandcode/agents)
+• /agent <nazwa> - Przełącz na agenta (jego model + prompt + permission)
+• /commands - Lista komend opencode + commandcode (.opencode-rs/commands + .commandcode/commands)
+• /mods - Lista modów CommandCode (.commandcode/mods/*.ts)
+• /plugins - Lista pluginów opencode (.opencode-rs/plugins/*.js|ts)\n\
 • /compat - Raport kompatybilności opencode + commandcode\n\
 • /format <plik> - Sformatuj plik (auto-detekcja: rustfmt/gofmt/prettier/black/clang-format)\n\
 • /keybinds - Pokaż konfigurowalne skróty klawiszowe (tui.json)\n\
@@ -3397,9 +3722,10 @@ impl App {
                 let mut content = String::from("🤖 Agenci opencode + commandcode:\n\n");
                 if compat.agents.is_empty() {
                     content.push_str("Brak agentów. Utwórz pliki .md w:\n");
-                    content.push_str("  • .opencode/agents/*.md (opencode)\n");
+                    content.push_str("  • .opencode-rs/agents/*.md (opencode-rs — zapis, domyślne)\n");
+                    content.push_str("  • .opencode/agents/*.md (opencode legacy — odczyt)\n");
                     content.push_str("  • .commandcode/agents/*.md (commandcode)\n");
-                    content.push_str("  • ~/.config/opencode/agents/*.md (global opencode)\n");
+                    content.push_str("  • ~/.config/opencode/agents/*.md (global opencode — odczyt)\n");
                     content.push_str("  • ~/.commandcode/agents/*.md (global commandcode)\n\n");
                     content.push_str("Format:\n---\ndescription: ...\nmode: primary|subagent\nmodel: ...\ntemperature: 0.1\n---\nPrompt...");
                 } else {
@@ -3456,8 +3782,9 @@ impl App {
                 let mut content = String::from("⚡ Komendy opencode + commandcode:\n\n");
                 if compat.commands.is_empty() {
                     content.push_str("Brak komend. Utwórz pliki .md w:\n");
-                    content.push_str("  • .opencode/commands/*.md\n");
-                    content.push_str("  • .commandcode/commands/*.md\n\n");
+                    content.push_str("  • .opencode-rs/commands/*.md (opencode-rs — zapis, domyślne)\n");
+                    content.push_str("  • .opencode/commands/*.md (opencode legacy — odczyt)\n");
+                    content.push_str("  • .commandcode/commands/*.md (commandcode)\n\n");
                     content.push_str("Format:\n---\ndescription: ...\nagent: ...\nmodel: ...\n---\nTemplate z $ARGUMENTS, $1-$9, !`cmd`, @file");
                 } else {
                     for c in &compat.commands {
@@ -3488,8 +3815,9 @@ impl App {
                 let mut content = String::from("🔌 Pluginy opencode:\n\n");
                 if compat.plugins.is_empty() {
                     content.push_str("Brak pluginów. Utwórz pliki .js/.ts w:\n");
-                    content.push_str("  • .opencode/plugins/*.js|ts (project)\n");
-                    content.push_str("  • ~/.config/opencode/plugins/*.js|ts (global)\n");
+                    content.push_str("  • .opencode-rs/plugins/*.js|ts (project — zapis, domyślne)\n");
+                    content.push_str("  • .opencode/plugins/*.js|ts (opencode legacy — odczyt)\n");
+                    content.push_str("  • ~/.config/opencode/plugins/*.js|ts (global — odczyt)\n");
                 } else {
                     for p in &compat.plugins {
                         let path_str = if p.path.as_os_str().is_empty() {
@@ -3511,8 +3839,9 @@ impl App {
                 let mut content = String::from("⌨️ Konfigurowalne skróty klawiszowe (tui.json):\n\n");
                 if compat.keybinds.is_empty() {
                     content.push_str("Brak niestandardowych skrótów. Utwórz tui.json w:\n");
-                    content.push_str("  • .opencode/tui.json (project)\n");
-                    content.push_str("  • ~/.config/opencode/tui.json (global)\n\n");
+                    content.push_str("  • .opencode-rs/tui.json (project — zapis, domyślne)\n");
+                    content.push_str("  • .opencode/tui.json (opencode legacy — odczyt)\n");
+                    content.push_str("  • ~/.config/opencode/tui.json (global — odczyt)\n\n");
                     content.push_str("Format:\n{\n  \"keybinds\": {\n    \"exit\": \"ctrl+c\",\n    \"model_picker\": \"ctrl+m,ctrl+p\",\n    \"command_palette\": \"ctrl+shift+p\"\n  }\n}");
                 } else {
                     for kb in &compat.keybinds {
@@ -3574,6 +3903,94 @@ impl App {
         Ok(())
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // Obsługa zmiany rozmiaru terminala (Event::Resize z main.rs run_app).
+    //
+    // Czemu to ważne? Poprzednio po resize:
+    //   * `scroll_offset` (u16) mógł być większy niż nowy height → chat skakał
+    //     "w dziwnych miejscach", w praktyce rysowany poza area = nakładanie
+    //     widgetów / artefakty na ekranie.
+    //   * `editor_scroll` (usize) — gdy okno terminala staje się MNIEJSZE,
+    //     wcześniej zapamiętany offset jest poza zakresem → edytor IDE
+    //     (F3) pokazywał pusty obszar zamiast pliku.
+    //   * `file_manager.left_scroll / right_scroll` — analogicznie dla
+    //     eksploratora Ctrl+E.
+    //
+    // Zasada: przy każdym resize wszystkie offsety są clamp'owane do
+    // rozsądnych wartości. Sam `terminal.resize(...)` w main.rs czyści bufor,
+    // a my tutaj poprawiamy stan wewnętrzny App żeby odpowiadał nowemu
+    // rozmiarowi.
+    // ══════════════════════════════════════════════════════════════════════════
+    pub fn handle_resize(&mut self, cols: u16, rows: u16) {
+        // Nowy "rozmiar widoczny" to rows minus nagłówek (2), status bar (2),
+        // input box (3) = typowo rows - 7. Bezpiecznie clampujemy do rows-2.
+        let visible = rows.saturating_sub(2) as usize;
+
+        // (1) Scroll wiadomości czatu
+        //     Domyślnie chcemy być "na dole", clampujemy do rozsądnego max.
+        let max_scroll = visible.saturating_mul(4).max(20) as u16;
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
+        }
+
+        // (2) Offset w edytorze kodu (F3 IDE)
+        //     editor_lines może być pusty — saturating_sub(0).
+        let max_editor = self.editor_lines.len().saturating_sub(1);
+        let editor_visible = visible.saturating_sub(4).max(1);
+        let clamp_ed = if max_editor > editor_visible {
+            max_editor.saturating_sub(editor_visible)
+        } else {
+            0
+        };
+        if self.editor_scroll > clamp_ed {
+            self.editor_scroll = clamp_ed;
+        }
+
+        // (3) Indeksy pickerów — clamp względem dostępnych list
+        //     (na wypadek gdyby ktoś miał otwarty picker w trakcie resize,
+        //      choć realnie raczej nie zdarza się, to bezpieczny clamping
+        //      jest tani).
+        let fm_total = self.filtered_models().len();
+        if self.model_picker_index >= fm_total && fm_total > 0 {
+            self.model_picker_index = fm_total - 1;
+        }
+        if self.session_picker_index >= self.available_sessions.len()
+            && !self.available_sessions.is_empty()
+        {
+            self.session_picker_index = self.available_sessions.len() - 1;
+        }
+        if self.theme_picker_index >= 8 {
+            // Liczba theme w AppTheme to stałe ~8 (dark/light/plus itp.)
+            self.theme_picker_index = 0;
+        }
+        if self.palette_index >= self.filtered_palette.len()
+            && !self.filtered_palette.is_empty()
+        {
+            self.palette_index = self.filtered_palette.len() - 1;
+        }
+
+        // (4) File manager: PaneState — clamp `selected_index` (który definiuje
+        //     widoczny scroll w file_manager) jeśli jest poza zakresem nowej
+        //     listy `items` (lub `tree_entries`). Scroll obliczany jest na bieżąco
+        //     w renderze.
+        use crate::file_manager::PaneState;
+        let clamp_pane = |pane: &mut PaneState| {
+            let max = pane.items.len().saturating_sub(1);
+            if pane.selected_index > max && !pane.items.is_empty() {
+                pane.selected_index = max;
+            }
+            let max_tree = pane.tree_entries.len().saturating_sub(1);
+            if pane.selected_index > max_tree && !pane.tree_entries.is_empty() {
+                pane.selected_index = max_tree;
+            }
+        };
+        clamp_pane(&mut self.file_manager.left);
+        clamp_pane(&mut self.file_manager.right);
+
+        // (5) Zupełnie nieużywane, ale tłumimy warning unused variable `cols`.
+        let _ = cols;
+    }
+
     pub fn handle_app_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Token(tok) => {
@@ -3602,6 +4019,64 @@ impl App {
                     self.streaming_buffer.clear();
                     self.save_current_session();
                     self.refresh_sessions_list();
+                } else {
+                    // ══════════════════════════════════════════════════════════════
+                    // FIX: ROOT CAUSE "0 odpowiedzi" (H6).
+                    //
+                    // Poprzednio: gdy streaming_buffer.is_empty() = NIE DODAWALIŚMY
+                    // ŻADNEJ WIADOMOŚCI. Użytkownik widział tylko swóją wiadomość
+                    // "user: hej" i NIC WIĘCEJ. Stwierdzał "0 odpowiedzi".
+                    //
+                    // Przypadek 1: Provider (Bridge, Direct API) zwrócił błąd HTTP
+                    //   w kodzie który nie rzuca Err() tylko zwraca empty stream.
+                    // Przypadek 2: Provider rzucił Err() ale drop eventu / nie dotarł
+                    //   do StreamError (np. oneshot cancel, task abort).
+                    // Przypadek 3: Użytkownik nie czekał 90s timeoutu 3×30s Bridge,
+                    //   więc Err jeszcze nie dotarł → widzimy 0 odpowiedzi.
+                    //
+                    // Bezpieczny fix: ZAWSZE pokazuj użytkownikowi JAKĄŚ
+                    // informację, nawet jeśli bufor jest pusty.
+                    // ══════════════════════════════════════════════════════════════
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!(
+                            "\
+⚠️  Brak odpowiedzi od modelu `{}` (pusty strumień).\n\
+Co mogło pójść nie tak:\n\
+  • Mostek Bridge (modele trae-*, cursor-*, windsurf-*, commandcode-*, devin-cascade-*, copilot-*, amazon-q*, augment-*):\n\
+    \t→ Wtyczka OpenCode-RS Universal Bridge musi być AKTYWNA.\n\
+    \t→ Sprawdź: curl http://127.0.0.1:8765/health  (lub 8766/8767 dla multi-edytorów)\n\
+    \t→ Jeśli OFFLINE uruchom VS Code / Cursor / Trae / Windsurf z zainstalowaną wtyczką z bridge-extension/out/extension.vsix\n\
+  • Modele Direct API (gemini-*, openai/*, anthropic/*, deepseek/*, groq-*, openrouter/*):\n\
+    \t→ Klucz API w ~/.opencode-rs/auth.json lub .env (np. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY)\n\
+    \t→ Uruchom: `opencode doctor` żeby sprawdzić które klucze są załadowane\n\
+  • Modele CLI (devin-cli/*, gemini-cli, aider-cli, claude-code-cli-*, codex-cli):\n\
+    \t→ Binarka na PATH: sprawdź `where.exe devin` / `where.exe gemini` / `where.exe claude-code-acp`\n\
+    \t→ Uruchom `opencode models` żeby zobaczyć które modele są ACTIVE / NO_KEY / FAIL\n\
+\n\
+Spróbuj:\n\
+  (1) Ctrl+M → przełącz na model który nie wymaga mostka, np. `ollama/*` (lokalny), `gemini-3.7-flash` (Direct API $0.10), `opencode-acp/*` (127 modeli), `kilo-run/*` (302 modele, 17 darmowych).\n\
+  (2) Uruchom `opencode doctor` — status every providera z dokładną informacją co brakuje.",
+                            self.active_model
+                        ),
+                    });
+                    self.save_current_session();
+                    self.refresh_sessions_list();
+                }
+                // UI ZAWSZE REAGUJE: po StreamFinished automatycznie uruchom
+                // kolejny prompt z kolejki pending_prompts (FIFO).
+                if !self.pending_prompts.is_empty() {
+                    let next = self.pending_prompts.remove(0);
+                    let left = self.pending_prompts.len();
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: if left == 0 {
+                            format!("⏭️  Następny prompt z kolejki: {}", short_preview(&next, 120))
+                        } else {
+                            format!("⏭️  Następny z kolejki ({} pozostało): {}", left, short_preview(&next, 120))
+                        },
+                    });
+                    self.pending_next_submit = Some(next);
                 }
             }
             AppEvent::StreamError(err) => {
@@ -3609,12 +4084,45 @@ impl App {
                 self.agent_abort = None;
                 self.last_token_time = None;
                 self.stream_start_time = None;
+                // Jeśli bufor jest pusty → dodaj PEŁNĄ instrukcję diagnostyczną (tak jak StreamFinished empty).
+                // Jeśli bufor ma częściową treść → dodaj ją jako asystenta, potem błąd.
+                if !self.streaming_buffer.is_empty() {
+                    self.messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: self.streaming_buffer.clone(),
+                    });
+                    self.streaming_buffer.clear();
+                }
                 self.messages.push(ChatMessage {
                     role: "system".to_string(),
-                    content: format!("❌ Błąd: {err}"),
+                    content: format!(
+                        "\
+❌ Błąd modelu `{model}`: {err}
+
+Co mogło pójść nie tak:
+  • Mostek Bridge (trae-*, cursor-*, windsurf-*): curl 127.0.0.1:8765/health; uruchom edytor z bridge-extension.vsix
+  • Direct API: klucze w ~/.opencode-rs/auth.json → `opencode doctor`
+  • CLI: where.exe devin/gemini/claude → `opencode models`
+
+Spróbuj: (1) Ctrl+M → `opencode-acp/*` / `kilo-run/*` (darmowe) / `ollama/*` local. (2) `opencode doctor`.
+",
+                        model = self.active_model,
+                        err = err,
+                    ),
                 });
                 self.streaming_buffer.clear();
                 self.save_current_session();
+                self.refresh_sessions_list();
+                // UI ZAWSZE REAGUJE: nawet po błędzie streamu kontynuuj kolejkę
+                if !self.pending_prompts.is_empty() {
+                    let next = self.pending_prompts.remove(0);
+                    let left = self.pending_prompts.len();
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("⏭️  Następny prompt z kolejki ({} pozostało): {}", left, short_preview(&next, 120)),
+                    });
+                    self.pending_next_submit = Some(next);
+                }
             }
             AppEvent::StatusNotification(msg) => {
                 self.messages.push(ChatMessage {
@@ -3628,9 +4136,16 @@ impl App {
                     self.dynamic_models = models;
                 }
             }
-            AppEvent::PermissionRequest(tool, args_summary) => {
-                // Pokaż dialog uprawnień w TUI — użytkownik zatwierdza Enter (allow) lub Esc (deny)
+            AppEvent::ProvidersAvailability(map) => {
+                // Aktualizacja mapy dostępności providerów w runtime.
+                // Po tym wydarzeniu filtered_models() zaczyna ukrywać
+                // modele providerów niedostępnych (np. antigravity gdy brak IDE).
+                self.provider_availability = map;
+            }
+            AppEvent::PermissionRequest(tool, args_summary, tx) => {
+                // Pokaż dialog uprawnień — Enter = allow, Esc = deny
                 self.permission_dialog = Some((tool, args_summary));
+                self.permission_response_tx = Some(tx);
             }
             AppEvent::PermissionResponse(allow) => {
                 // Wyślij odpowiedź do agenta (oneshot channel)
@@ -3645,6 +4160,78 @@ impl App {
             }
         }
     }
+
+    /// Wywoływane przez main.rs event loop CO 800ms podczas każdego ticka renderu.
+    /// Jeśli użytkownik modyfikował input_text, zapisuje draft do current_session
+    /// (debounce 800ms). Nie robi fsync na każdą literkę (byłoby ~3-10 zapisów/s
+    /// podczas szybkiego pisania = micro-laggi). TYLKO jeśli input_text naprawdę się
+    /// zmienił od ostatniego zapisu.
+    pub fn maybe_save_draft_debounced(&mut self) {
+        use std::time::Instant;
+
+        let now = Instant::now();
+        if let Some(last) = self.last_draft_save {
+            if last.elapsed().as_millis() < 800 {
+                return;
+            }
+        }
+        self.last_draft_save = Some(now);
+
+        let needs = match self.current_session.extra.get("draft_prompt").and_then(|v| v.as_str()) {
+            Some(saved) => saved != self.input_text.as_str(),
+            None => !self.input_text.is_empty(),
+        };
+        if needs {
+            self.current_session.extra.insert(
+                "draft_prompt".to_string(),
+                serde_json::Value::String(self.input_text.clone()),
+            );
+            let now_save = Instant::now();
+            self.current_session.updated_at = Utc::now().to_rfc3339();
+            self.current_session.model = self.active_model.clone();
+            self.session_manager.save_session(&self.current_session).ok();
+            if let Some(last_ref) = self.last_session_save.as_mut() {
+                let _ = now_save;
+                let _ = last_ref;
+            }
+        }
+    }
+}
+
+fn short_preview(s: &str, max_chars: usize) -> String {
+    let trimmed = s.trim().replace('\n', " ⏎ ");
+    if trimmed.chars().count() <= max_chars {
+        trimmed
+    } else {
+        let mut out: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Czy tekst wygląda na wklejony zrzut ekranu TUI (losowe znaki ramek UI / odpadały użytkownik nie pisze takiego promptu).
+/// Powinno być użyte do odrzucania przypadkowych wklejeń w pending_prompts.
+fn looks_like_ui_paste_junk(s: &str) -> bool {
+    if s.is_empty() { return true; }
+    let chars_count = s.chars().count();
+    // Za długi tekst podczas streamingu to prawie na pewno wklejony zrzut ekranu.
+    if chars_count > 4000 { return true; }
+    let mut box_draw_count = 0u32;
+    let box_draw_threshold = (chars_count as u32) / 20; // >5% box draw = junk
+    for ch in s.chars() {
+        let is_box = matches!(ch,
+            '\u{2500}'..='\u{257F}' // box drawing (─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋ etc.)
+            | '\u{2580}'..='\u{259F}' // block elements (░▒▓█ ▀▄ etc.)
+            | '\u{25A0}'..='\u{25FF}' // geometric shapes (■□▲● etc.)
+        );
+        if is_box {
+            box_draw_count += 1;
+            if box_draw_threshold > 0 && box_draw_count > box_draw_threshold {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Zbiera pliki z danymi rozszerzeniami z katalogu (rekursywnie, max `limit` plików).

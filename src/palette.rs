@@ -51,7 +51,7 @@ impl CommandPalette {
             PaletteItem {
                 command: "/dropzone",
                 category: "📤 Transfer",
-                description: "Skanuj dropzone (~/.opencode/dropzone/) i dołącz pliki do czatu",
+                description: "Skanuj dropzone (~/.opencode-rs/dropzone/) i dołącz pliki do czatu",
                 shortcut: "",
             },
             PaletteItem {
@@ -229,7 +229,7 @@ impl CommandPalette {
             PaletteItem {
                 command: "/plugins",
                 category: "🤖 OpenCode/CommandCode",
-                description: "Lista pluginów opencode (.opencode/plugins/*.js|ts)",
+                description: "Lista pluginów opencode (.opencode-rs/plugins/*.js|ts)",
                 shortcut: "",
             },
             PaletteItem {

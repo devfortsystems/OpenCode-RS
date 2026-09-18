@@ -79,7 +79,7 @@ impl HermesDaemon {
         if let Some(d) = directories::ProjectDirs::from("com", "opencode", "opencode-rs") {
             d.data_dir().join("hermes").join("logs")
         } else {
-            PathBuf::from(".opencode/hermes_logs")
+            PathBuf::from(".opencode-rs/hermes_logs")
         }
     }
 

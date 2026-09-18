@@ -52,7 +52,6 @@ async fn run_kilo(model: Option<&str>, prompt: &str) -> String {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_kilo_run_free_nemotron() {
     eprintln!("🚀 Test: kilo run → darmowy Nemotron 3.5 Lightning");
 

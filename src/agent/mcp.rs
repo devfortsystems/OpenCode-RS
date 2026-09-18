@@ -29,7 +29,17 @@ pub struct McpManager {
 
 impl McpManager {
     pub fn load_from_project_or_global(work_dir: &Path) -> Self {
-        // 1. Sprawdź .opencode/mcp.json w projekcie
+        // 1. Sprawdź .opencode-rs/mcp.json (zapis), potem legacy .opencode/mcp.json
+        let project_mcp_rs = work_dir.join(".opencode-rs").join("mcp.json");
+        if project_mcp_rs.exists() {
+            if let Ok(cfg) = Self::load_file(&project_mcp_rs) {
+                return Self {
+                    config: cfg,
+                    config_path: Some(project_mcp_rs),
+                    work_dir: work_dir.to_path_buf(),
+                };
+            }
+        }
         let project_mcp = work_dir.join(".opencode").join("mcp.json");
         if project_mcp.exists() {
             if let Ok(cfg) = Self::load_file(&project_mcp) {
@@ -82,7 +92,7 @@ impl McpManager {
 
     pub fn get_status_report(&self) -> String {
         if self.config.mcp_servers.is_empty() {
-            let mut report = "🔌 Model Context Protocol (MCP):\nBrak skonfigurowanych serwerów MCP.\n\nAby dodać serwery (np. PostgreSQL, SQLite, GitHub, Playwright):\nUtwórz plik `.opencode/mcp.json` z konfiguracją:\n```json\n{\n  \"mcpServers\": {\n    \"sqlite\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-sqlite\", \"--db-path\", \"test.db\"]\n    }\n  }\n}\n```".to_string();
+            let mut report = "🔌 Model Context Protocol (MCP):\nBrak skonfigurowanych serwerów MCP.\n\nAby dodać serwery (np. PostgreSQL, SQLite, GitHub, Playwright):\nUtwórz plik `.opencode-rs/mcp.json` z konfiguracją:\n```json\n{\n  \"mcpServers\": {\n    \"sqlite\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-sqlite\", \"--db-path\", \"test.db\"]\n    }\n  }\n}\n```".to_string();
             if let Some(ref p) = self.config_path {
                 report.push_str(&format!("\nSzukano w: {}", p.display()));
             }

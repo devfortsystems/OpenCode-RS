@@ -14,6 +14,19 @@ use crate::theme::AppTheme;
 pub fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
+    // ═══════════════════════════════════════════════════════════════════
+    // FIX: czyszczenie całego ekranu na początku KAŻDEJ klatki.
+    //
+    // Poprzedni bug: wszystkie popup pickery (model/theme/session/command/file_manager/permission)
+    // robiły `f.render_widget(Clear, popup_area)` TYLKO GDY BYŁY OTWARTE. Po zamknięciu
+    // (`Esc`/`Enter`) kolejny draw() NIE CZYŚCIŁ już obszaru pod pickerem, a widgety chat/sidebar
+    // nie zawsze go w 100% zakrywały (np. gdy terminal był mniejszy lub po resize). Efekt:
+    // "UI się rozwala" — resztki znaków z listy modeli, ramki dialogu itp. widoczne na ekranie.
+    // Ratatui zaleca wywołanie Clear() root area na początku renderu jeżeli używasz
+    // overlapping widgets (popupów). Rozwiązuje wszystkie "rozjechane UI" za jednym zamachem.
+    // ═══════════════════════════════════════════════════════════════════
+    f.render_widget(Clear, size);
+
     // Główny podział pionowy: Główny obszar roboczy + Footer z pigułkami skrótów
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -605,16 +618,38 @@ fn render_command_palette(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(search_widget, popup_chunks[0]);
 
     // ── LISTA KOMEND Z ELEGANCKIMI IKONAMI I TAGAMI ──
-    let items: Vec<ListItem> = if app.filtered_palette.is_empty() {
+    let palette_items = &app.filtered_palette;
+    let visible_height = (popup_chunks[1].height.saturating_sub(1)) as usize;
+    let len = palette_items.len();
+    let effective_idx = if len == 0 { 0 } else { app.palette_index.min(len - 1) };
+
+    let offset = if len > visible_height && visible_height > 0 && effective_idx >= visible_height {
+        let mut off = effective_idx - visible_height + 1;
+        if off + visible_height > len {
+            off = len.saturating_sub(visible_height);
+        }
+        off
+    } else {
+        0
+    };
+
+    let content_width = (popup_chunks[1].width.saturating_sub(2)) as usize;
+    let fixed_width = 3 + 3 + 14 + 11 + 5;
+    let desc_width = (content_width as isize - fixed_width as isize).max(14) as usize;
+
+    let items: Vec<ListItem> = if palette_items.is_empty() {
         vec![ListItem::new(Line::from(vec![
             Span::styled("   Brak pasujących komend dla tego zapytania", Style::default().fg(theme.text_muted)),
         ]))]
     } else {
-        app.filtered_palette
+        palette_items
             .iter()
+            .skip(offset)
+            .take(visible_height.max(1))
             .enumerate()
             .map(|(i, item)| {
-                let is_selected = i == app.palette_index;
+                let original_idx = offset + i;
+                let is_selected = original_idx == effective_idx;
 
                 let icon = match item.command {
                     "/commit" => "💾 ",
@@ -650,12 +685,18 @@ fn render_command_palette(f: &mut Frame, area: Rect, app: &App) {
                     item.category.replace("🛠️ ", "").replace("⚙️ ", "").replace("⚡ ", "").replace("📁 ", "").replace("🌐 ", "")
                 };
 
+                let desc_display = if item.description.len() > desc_width {
+                    format!("{}...", &item.description.chars().take(desc_width.saturating_sub(3)).collect::<String>())
+                } else {
+                    item.description.to_string()
+                };
+
                 let line = if is_selected {
                     Line::from(vec![
                         Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(theme.primary).add_modifier(Modifier::BOLD)),
                         Span::styled(icon, Style::default().fg(Color::Black).bg(theme.primary)),
                         Span::styled(format!("{:<14}", item.command), Style::default().fg(Color::Black).bg(theme.primary).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("{:<42}", item.description), Style::default().fg(Color::Black).bg(theme.primary)),
+                        Span::styled(format!("{:<w$}", desc_display, w = desc_width), Style::default().fg(Color::Black).bg(theme.primary)),
                         Span::styled(format!(" [{:>8}] ", tag_str), Style::default().fg(Color::Black).bg(theme.primary).add_modifier(Modifier::BOLD)),
                     ])
                 } else {
@@ -663,7 +704,7 @@ fn render_command_palette(f: &mut Frame, area: Rect, app: &App) {
                         Span::styled("   ", Style::default()),
                         Span::styled(icon, Style::default().fg(theme.primary)),
                         Span::styled(format!("{:<14}", item.command), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("{:<42}", item.description), Style::default().fg(Color::Rgb(215, 220, 230))),
+                        Span::styled(format!("{:<w$}", desc_display, w = desc_width), Style::default().fg(Color::Rgb(215, 220, 230))),
                         Span::styled(format!(" [{:>8}] ", tag_str), Style::default().fg(theme.accent)),
                     ])
                 };
@@ -673,8 +714,14 @@ fn render_command_palette(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
+    let title = if len > visible_height && visible_height > 0 {
+        format!(" ⚡ Komendy [{}-{}/{}] ", offset.saturating_add(1), (offset + visible_height).min(len), len)
+    } else {
+        String::new()
+    };
     let list = List::new(items).block(
         Block::default()
+            .title(title)
             .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border)),
@@ -917,41 +964,63 @@ fn render_model_picker(f: &mut Frame, area: Rect, app: &App) {
     let popup_area = centered_rect(88, 75, area);
     f.render_widget(Clear, popup_area);
 
+    // ── PRE: Oblicz przybliżoną wysokość zakładek (do Layout) ──
+    // 37 zakładek przy szerokości ~80% ekranu = ~3-4 wiersze. Dajemy 7 = 5 content + 2 borders.
+    let tabs_block_height: u16 = 7;
+
     let popup_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Zakładki Providerów (Tabs)
-            Constraint::Min(8),    // 2 Kolumny: Lista + Karta Parametrów
-            Constraint::Length(1), // Pasek podpowiedzi
+            Constraint::Length(tabs_block_height), // Zakładki Providerów (Tabs — WIELWIERSZOWE)
+            Constraint::Min(8),                    // 2 Kolumny: Lista + Karta Parametrów
+            Constraint::Length(1),                 // Pasek podpowiedzi
         ])
         .split(popup_area);
 
-    // ── GÓRNY PASEK ZAKŁADEK PROVIDERÓW ──
+    // ── GÓRNY PASEK ZAKŁADEK PROVIDERÓW (WIELWIERSZOWY, WRAPPING) ──
     let tabs = App::model_provider_tabs();
     let current_tab_idx = app.model_filter_index % tabs.len();
 
-    let tab_spans: Vec<Span> = tabs
-        .iter()
-        .enumerate()
-        .flat_map(|(i, (label, _))| {
-            let is_active = i == current_tab_idx;
-            let (bg_color, fg_color) = if is_active {
-                (theme.primary, Color::Black)
-            } else {
-                (Color::Reset, theme.text_muted)
-            };
+    // Maksymalna szerokość 1 wiersza zakładek (szerokość bloku - 2 na borders lewo/prawo)
+    let content_width = popup_chunks[0].width.saturating_sub(2) as usize;
 
-            vec![
-                Span::styled(
-                    format!(" {} ", label),
-                    Style::default().bg(bg_color).fg(fg_color).add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() }),
-                ),
-                Span::styled(" ", Style::default()),
-            ]
-        })
-        .collect();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut current_spans: Vec<Span> = Vec::new();
+    let mut current_len: usize = 0;
 
-    let tabs_widget = Paragraph::new(Line::from(tab_spans)).block(
+    for (i, (label, _)) in tabs.iter().enumerate() {
+        let is_active = i == current_tab_idx;
+        let (bg_color, fg_color) = if is_active {
+            (theme.primary, Color::Black)
+        } else {
+            (Color::Reset, theme.text_muted)
+        };
+
+        // Szerokość wizualna 1 zakładki: " {} " + 1 spacja separator
+        let tab_text = format!(" {} ", label);
+        let tab_vis_len = tab_text.len() + 1; // +1 na końcową spację
+
+        // Jeśli nie mieści się w bieżącym wierszu (a wiersz nie jest pusty) → złam wiersz
+        if current_len + tab_vis_len > content_width && !current_spans.is_empty() {
+            lines.push(Line::from(current_spans));
+            current_spans = Vec::new();
+            current_len = 0;
+        }
+
+        current_spans.push(Span::styled(
+            tab_text,
+            Style::default().bg(bg_color).fg(fg_color).add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() }),
+        ));
+        current_spans.push(Span::styled(" ", Style::default()));
+        current_len += tab_vis_len;
+    }
+    if !current_spans.is_empty() {
+        lines.push(Line::from(current_spans));
+    }
+
+    // Jeśli obliczyliśmy więcej wierszy niż zarezerwowano (bardzo wąski terminal) —
+    // nic nie robimy, Paragraph po prostu ucina nadmiar (lecz i tak jest więcej niż 1)
+    let tabs_widget = Paragraph::new(lines).block(
         Block::default()
             .title(" ◈ Dostawcy & Ulubione (Użyj [←/→]/[Tab]/[ ]/[[] aby zmienić) ")
             .borders(Borders::ALL)
@@ -1037,9 +1106,9 @@ fn render_model_picker(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let list_title = if filtered_len > visible_height && visible_height > 0 {
-        format!(" Dostępne Modele ({}/{}) [{}-{}] ", filtered_len, filtered_len, offset + 1, (offset + visible_height).min(filtered_len))
+        format!(" Dostępne Modele ({}/{}) [{}-{}] ", effective_idx.saturating_add(1), filtered_len, offset.saturating_add(1), (offset + visible_height).min(filtered_len))
     } else {
-        format!(" Dostępne Modele ({}) ", filtered_len)
+        format!(" Dostępne Modele ({}{}) ", if filtered_len == 0 { String::new() } else { format!("{}/", effective_idx.saturating_add(1)) }, filtered_len)
     };
     let list = List::new(items).block(
         Block::default()
@@ -1237,17 +1306,36 @@ fn render_model_picker(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_session_picker(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.current_theme;
-    let popup_area = centered_rect(75, 60, area);
+    let popup_area = centered_rect(75, 72, area);
     f.render_widget(Clear, popup_area);
 
-    let items: Vec<ListItem> = if app.available_sessions.is_empty() {
+    let sessions = &app.available_sessions;
+    let visible_height = (popup_area.height.saturating_sub(2)) as usize;
+    let len = sessions.len();
+    let effective_idx = if len == 0 { 0 } else { app.session_picker_index.min(len - 1) };
+
+    // Viewport scrolling offset (jak w model picker i theme picker)
+    let offset = if len > visible_height && visible_height > 0 && effective_idx >= visible_height {
+        let mut off = effective_idx - visible_height + 1;
+        if off + visible_height > len {
+            off = len.saturating_sub(visible_height);
+        }
+        off
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = if sessions.is_empty() {
         vec![ListItem::new(Line::from(Span::styled("  Brak zapisanych sesji dla tego projektu", Style::default().fg(theme.text_muted))))]
     } else {
-        app.available_sessions
+        sessions
             .iter()
+            .skip(offset)
+            .take(visible_height.max(1))
             .enumerate()
             .map(|(i, s)| {
-                let is_selected = i == app.session_picker_index;
+                let original_idx = offset + i;
+                let is_selected = original_idx == effective_idx;
                 let is_current = s.id == app.current_session.id;
 
                 let style = if is_selected {
@@ -1266,11 +1354,23 @@ fn render_session_picker(f: &mut Frame, area: Rect, app: &App) {
                     "  "
                 };
 
-                let title_trimmed = if s.title.len() > 28 {
-                    format!("{}...", &s.title[..25])
+                // Dynamiczne przycinanie tytułu: szerokość popupu (75% ekranu) minus stałe elementy
+                let popup_width = popup_area.width.saturating_sub(2) as usize;
+                let fixed_width = "▶ ".len()                              // prefix
+                    + 30 + 2                                              // title {:<30}
+                    + " (".len() + 6 + " msgs) ".len()                    // (123 msgs)
+                    + 3 + " ".len() + 16 + " ".len();                     // | model.len | YYYY-MM-DD HH:MM
+                let title_max_len = (popup_width as isize - fixed_width as isize).max(10) as usize;
+                let title_display = if title_max_len >= 28 {
+                    if s.title.len() > 28 { format!("{}...", &s.title[..25]) } else { s.title.clone() }
                 } else {
-                    s.title.clone()
+                    if s.title.len() > title_max_len.saturating_sub(3) {
+                        format!("{}...", &s.title[..title_max_len.saturating_sub(3)])
+                    } else {
+                        s.title.clone()
+                    }
                 };
+                let title_col_width = title_max_len.max(10);
 
                 let date_str = if s.updated_at.len() >= 16 {
                     &s.updated_at[..16]
@@ -1280,9 +1380,9 @@ fn render_session_picker(f: &mut Frame, area: Rect, app: &App) {
 
                 let line = Line::from(vec![
                     Span::styled(prefix, style),
-                    Span::styled(format!("{:<30}", title_trimmed), style),
+                    Span::styled(format!("{:<w$}", title_display, w = title_col_width), style),
                     Span::styled(format!(" ({} msgs)", s.message_count), if is_selected { style } else { Style::default().fg(theme.accent) }),
-                    Span::styled(format!(" | {} ", s.model), if is_selected { style } else { Style::default().fg(theme.secondary) }),
+                    Span::styled(format!(" | {:<16}", s.model), if is_selected { style } else { Style::default().fg(theme.secondary) }),
                     Span::styled(format!(" | {}", date_str), if is_selected { style } else { Style::default().fg(theme.text_muted) }),
                 ]);
                 ListItem::new(line)
@@ -1290,9 +1390,19 @@ fn render_session_picker(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
+    let title = if len > visible_height && visible_height > 0 {
+        format!(" 📂 Session History [{}-{}/{}] (Enter: Load, 'd'/Del: Delete, Esc: Close) ",
+            offset.saturating_add(1),
+            (offset + visible_height).min(len),
+            len)
+    } else {
+        format!(" 📂 Session History ({}{}) (Enter: Load, 'd'/Del: Delete, Esc: Close) ",
+            if len == 0 { String::new() } else { format!("{}/", effective_idx.saturating_add(1)) },
+            len)
+    };
     let list = List::new(items).block(
         Block::default()
-            .title(" 📂 Session History (Enter: Load, 'd'/Del: Delete, Esc: Close) ")
+            .title(title)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.primary)),
@@ -1368,13 +1478,13 @@ fn requirement_str(prov: &str) -> String {
 
     // 3. Direct API — klucz w .env/auth.json
     match prov {
-        "gemini" => "🔑 GEMINI_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "openai" => "🔑 OPENAI_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "anthropic" => "🔑 ANTHROPIC_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "deepseek" => "🔑 DEEPSEEK_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "groq" => "🔑 GROQ_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "mistral" => "🔑 MISTRAL_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
-        "openrouter" => "🔑 OPENROUTER_API_KEY w .env lub ~/.opencode/auth.json".to_string(),
+        "gemini" => "🔑 GEMINI_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "openai" => "🔑 OPENAI_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "anthropic" => "🔑 ANTHROPIC_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "deepseek" => "🔑 DEEPSEEK_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "groq" => "🔑 GROQ_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "mistral" => "🔑 MISTRAL_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
+        "openrouter" => "🔑 OPENROUTER_API_KEY w .env lub ~/.opencode-rs/auth.json".to_string(),
         "devin-cloud" => "🔑 DEVIN_API_KEY + DEVIN_ORG_ID w .env (api.devin.ai v3)".to_string(),
         "ollama" => "🖥️ Ollama running na localhost:11434 (darmowe, lokalne)".to_string(),
         "lmstudio" => "🖥️ LM Studio running na localhost:1234 (darmowe, lokalne)".to_string(),
@@ -1391,7 +1501,7 @@ fn render_permission_dialog(f: &mut Frame, size: Rect, app: &App) {
     let (tool, args) = app.permission_dialog.as_ref().unwrap();
 
     let theme = &app.current_theme;
-    let popup_area = centered_rect(60, 25, size);
+    let popup_area = centered_rect(70, 38, size); // trochę wyższy, bo args może być długie
 
     // Clear background
     f.render_widget(Clear, popup_area);
@@ -1402,27 +1512,52 @@ fn render_permission_dialog(f: &mut Frame, size: Rect, app: &App) {
         .border_style(Style::default().fg(theme.warning))
         .style(Style::default().bg(theme.bg_card));
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("Narzędzie: {}", tool),
-            Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("Argumenty: {}", &args[..args.len().min(80)]),
-            Style::default().fg(theme.text_muted),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("[Enter] ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::styled("Zezwól  ", Style::default().fg(theme.primary)),
-            Span::styled("[Esc] ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
-            Span::styled("Odmów", Style::default().fg(theme.primary)),
-        ]),
-    ];
+    // Przygotuj każdą sekcję jako Vec<Line> zamiast pojedynczych Line —
+    // dzięki temu możemy zawijać długie teksty ręcznie per dostępna szerokość
+    let content_width = (popup_area.width.saturating_sub(4)) as usize; // 2 borders + 2 padding
 
-    let paragraph = Paragraph::new(lines).block(block).alignment(Alignment::Center);
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    // Narzędzie
+    lines.push(Line::from(Span::styled(
+        format!("Narzędzie: {}", tool),
+        Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    // Argumenty — RĘCZNE ZAWIJANIE per content_width
+    lines.push(Line::from(Span::styled(
+        "Argumenty:",
+        Style::default().fg(theme.text_muted).add_modifier(Modifier::BOLD),
+    )));
+    if args.is_empty() {
+        lines.push(Line::from(Span::styled(" (brak)", Style::default().fg(theme.text_muted))));
+    } else {
+        let mut remaining = args.as_str();
+        while !remaining.is_empty() {
+            let end = remaining.char_indices()
+                .nth(content_width.min(remaining.len()))
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+            let chunk: String = remaining.chars().take(end).collect();
+            lines.push(Line::from(Span::styled(
+                format!("  {}", chunk),
+                Style::default().fg(theme.text_muted),
+            )));
+            remaining = if end < remaining.len() { &remaining[end..] } else { "" };
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Przyciski
+    lines.push(Line::from(vec![
+        Span::styled("[Enter] ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+        Span::styled("Zezwól  ", Style::default().fg(theme.primary)),
+        Span::styled("[Esc] ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
+        Span::styled("Odmów", Style::default().fg(theme.primary)),
+    ]));
+
+    let paragraph = Paragraph::new(lines).block(block).alignment(Alignment::Left);
     f.render_widget(paragraph, popup_area);
 }
 

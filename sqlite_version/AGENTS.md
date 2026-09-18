@@ -5,7 +5,7 @@
 ```bash
 cargo check                  # ~17s — szybki check
 cargo build                  # pełny build, zero ostrzeżeń
-cargo test                   # 163 testów, ~25s
+cargo test                   # 209 testów --lib, ~30s
 cargo test memory::          # tylko memory (19 testów, w tym /palace)
 cargo test skills::          # tylko skills (5 testów)
 cargo test providers::       # tylko providers (cli_subprocess + devin_cloud + antigravity)
@@ -19,6 +19,36 @@ cargo build --release        # release binary
 ```
 
 Platforma: Windows + PowerShell (uwaga: `&&` nie działa, używaj `;`).
+
+## 🛡️ Dystrybucja i Ochrona Kodu (Prywatne DevFortDB vs Publiczne SQLite)
+
+- **Wersja Prywatna (Główny katalog — dla autora / DevFort Systems):**
+  - Używa autorskiej, wbudowanej bazy **DevFortDB** (`devfortdb-core`, `devfortdb-embedded-api` z `../baza/crates/*`).
+  - **Zasada absolutna:** Kod bazy DevFortDB jest prywatny, prawnie chroniony i **NIGDY** nie może trafić do publicznego repozytorium.
+  - To środowisko pozostaje dla autora w jego prywatnym repozytorium.
+- **Wersja Publiczna (Katalog `sqlite_version/` — do publicznego repozytorium):**
+  - Oficjalna wersja do publikacji open-source (`devfortsystems/OpenCode-RS`).
+  - Zastępuje DevFortDB w 100% otwartym silnikiem **SQLite** (`rusqlite` z flagą `bundled`).
+  - Zero prywatnych zależności, zero kodu DevFortDB, natychmiastowa kompilacja `cargo build` na dowolnym systemie.
+  - Posiada wszystkie funkcje (TUI IDE, ReAct, TextMate VS Code syntax, VSIX, RepoMap, providerzy CLI/ACP/cloud).
+  - Więcej szczegółów w [DISTRIBUTION.md](file:///c:/projekt/opencode-rs/DISTRIBUTION.md).
+- **Zasada Ciągłej Synchronizacji:**
+  - Wszelkie zmiany wspólnego kodu (`src/`, `tests/`) są synchronizowane natychmiast do obu wersji.
+  - Do automatycznego transferu służy skrypt: `powershell .\scripts\sync_to_sqlite.ps1` (kopiuje wspólny kod, omija `database.rs` i `archival.rs`, weryfikuje `cargo check`).
+
+## 📂 Konwencja Katalogów: ~/.opencode-rs i .opencode-rs (100% Przenośność)
+
+- **Zasada separacji zapisu i odczytu:**
+  - OpenCode-RS zapisuje **ZAWSZE** do swoich dedykowanych katalogów:
+    - Globalnie: `~/.opencode-rs/` (`auth.json`, `.env`, `config.json`, `db/`, `memory/`, `skills/`)
+    - Per-projekt: `.opencode-rs/` (`plan.md`, `memory/`, `db/`, `config.json`, `sessions/`, `skills/`)
+  - Katalogi legacy (`.opencode/`, `.commandcode/`, `.roo/`, `.cline/`) służą **WYŁĄCZNIE** do odczytu i automatycznej migracji.
+- **Automatyczne utrwalanie kluczy API:**
+  - Przy starcie lub dodaniu klucza (`opencode auth add`), OpenCode-RS scala i utrwala wszystkie klucze w `~/.opencode-rs/auth.json` oraz `~/.opencode-rs/.env`.
+- **Przeniesienie na inny komputer:**
+  - Wystarczy skopiować folder `C:\Users\<TwojaNazwa>\.opencode-rs\` oraz plik `opencode.exe` — wszystko (klucze, baza, sesje, pamięć, skille) działa natychmiast bez ponownej konfiguracji.
+- **Tryb przenośny (Portable):**
+  - Jeśli obok `opencode.exe` umieścisz `.env` lub `auth.json`, program działa w trybie w 100% przenośnym (np. na pendrive).
 
 ## Architektura (krótko)
 
@@ -215,14 +245,17 @@ Plan i memory blocks są wstrzykiwane w prompt delegatów (Devin ACP/Cloud) prze
 - [x] Narzędzie agenta `web_fetch` (`src/agent/tools.rs`) — pobieranie stron WWW i dokumentacji z czyszczeniem do tekstu/Markdown
 - [x] Silnik kolorowania składni 100% jak w Visual Studio Code (`src/syntax.rs`) — TextMate grammars (`syntect` + `syntect-tui`), 50+ języków, oficjalna paleta barw VS Code Dark+ (#569CD6, #C586C0, #4EC9B0, #DCDCAA, #CE9178, #B5CEA8, #6A9955)
 - [x] Nowe komendy TUI i palety: `/ide`, `/repomap`, `/diff`, `/copy`, `/compact`, `/vsix`
-- [x] Łącznie 211+ testów przechodzących w 100%
+- [x] Workspace Resurrect (`src/workspace.rs`) — wielozadaniowość kart (multi-tab), niezależny katalog projektu (`project_path`) i model AI per karta, auto-utrwalanie draftów promptów (WezTerm-style resurrect: brak utraty tekstu po restarcie PC)
+- [x] Quota & Subscription Tracker (`src/quota.rs`) — monitorowanie pakietów (OpenRouter saldo USD, Google Gemini 1500 RPD, Antigravity 32 modele bez limitu, OpenAI/Anthropic/Devin, daty odnowienia i statusy)
+- [x] Windows System Tray (`src/tray.rs`) — daemon zasobnika systemowego (`opencode --tray` / `opencode tray`), menu podręczne (Web UI, TUI, ~/.opencode-rs, autostart Windows, exit), podwójny klik do Web UI (<5 MB RAM)
+- [x] Quasar Web UI (Vue 3) + ApexCharts (`src/web/dashboard.html` & `src/web/mod.rs`) — 3-kolumnowe IDE, pasek kart projektów, eksplorator plików `q-tree`, edytor kodu, czat AI z auto-zapisem draftu oraz wykresy kołowe limitów ApexCharts
+- [x] Łącznie 209 testów `--lib` przechodzących w 100%, pełna synchronizacja z `sqlite_version/` (58 zsynchronizowanych plików, omija `database.rs` + `archival.rs`)
+- [x] Permission `"ask"` — dialog TUI (Enter = allow, Esc = deny), timeout 120 s; headless = allow
+- [x] ACP `session/cancel` — abortuje bieżący `session/prompt` (AbortHandle per session_id, `StopReason::Cancelled`)
+- [x] Zapis ścieżek UI: `~/.opencode-rs/` / `.opencode-rs/` (legacy `.opencode/` tylko odczyt)
+- [x] Dockerfile + `.dockerignore` (Web UI na porcie 7711; 8765-8767 zarezerwowane dla Bridge Extension)
 
 ### Do zrobienia
 
-### 1. Push na origin
-- 3 commity lokalne, nie pushowane:
-  1. `024899f` fix: clean compiler warnings, unreachable /agent pattern and test timeouts
-  2. `07f8ac9` feat: IDE mode (F3), RepoMap AST index, VSIX manager, web_fetch tool, VS Code Dark+ syntax highlighting
-  3. `5a0cff7` feat: TextMate/syntect VS Code syntax highlighting with official Dark+ palette
-- **Koszt:** trywialny (wymaga zgody — nie pushować bez pytania)
+(puste — backlog zrealizowany)
 

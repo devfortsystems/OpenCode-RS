@@ -3,7 +3,9 @@
 //! Antigravity IDE używa lokalnego gRPC-Web/Connect server (language_server.exe) do komunikacji z modelami.
 //! Ten provider łączy się bezpośrednio z language server, omijając IDE.
 //!
-//! Wymaga uruchomionego Antigravity IDE (language_server.exe musi nasłuchiwać).
+//! NIE WYMAGA uruchomionego Antigravity IDE. Jeśli language_server.exe nie nasłuchuje,
+//! provider uruchamia go automatycznie w trybie headless standalone (--standalone, port 13443)
+//! i żyje po zamknięciu opencode-rs (kill_on_drop=false).
 //! Provider automatycznie wykrywa port i CSRF token.
 //!
 //! Protokół: Connect streaming (application/connect+json) z 5-bajtowym framingiem.
@@ -81,23 +83,45 @@ impl AntigravityProvider {
     /// Szuka language_server.exe, znajduje port HTTPS, pobiera CSRF token.
     /// Jeśli nie znajdzie — uruchamia language_server.exe w trybie standalone.
     pub async fn discover() -> Result<Self> {
-        // 1. Spróbuj wykryć już uruchomiony LS (z IDE)
+        // 1. Spróbuj wykryć już uruchomiony LS (z prawdziwego Antigravity IDE)
+        //    (wyciąga CSRF z command line procesu przez Get-CimInstance)
         if let Ok((port, csrf_token)) = discover_antigravity().await {
             return Ok(Self::new(port, csrf_token));
         }
-        // 2. Fallback — uruchom language_server.exe standalone (jak IDE to robi)
+        // 1.5. Spróbuj odzyskać NASZ POPRZEDNI headless LS (zapisany w ~/.opencode-rs/antigravity_state.json)
+        //    (poprzednia sesja opencode-rs wystartowała LS z kill_on_drop=false, żyje dalej,
+        //     ale discover_antigravity() go czasem nie widzi bo PowerShell jest wolny/ma problemy)
+        if let Some((port, csrf_token)) = recover_standalone_from_state().await {
+            eprintln!("Antigravity: odzyskano poprzedni standalone LS (port {port})");
+            return Ok(Self::new(port, csrf_token));
+        }
+        // 2. Fallback — uruchom NOWY language_server.exe standalone (jak IDE to robi)
         let (port, csrf_token) = start_standalone_ls().await?;
+        // Zapisz do stanu, żeby następnym razem odzyskać bez nowego spawnu
+        save_standalone_state(port, &csrf_token);
         Ok(Self::new(port, csrf_token))
     }
 
-    /// Sprawdza czy Antigravity IDE jest uruchomione (lub można uruchomić LS).
-    /// Nie odpala language_server.exe — tylko wykrywa już działający proces.
-    /// Twardy timeout, żeby testy/quota tracker nie wisiały na PowerShell.
+    /// Sprawdza czy Antigravity jest dostępne: (A) LS już działa, LUB (B) binarka
+    /// language_server.exe istnieje i można ją uruchomić headless standalone przy
+    /// pierwszym użyciu (discover() → start_standalone_ls()).
+    ///
+    /// Nie odpala language_server.exe — tylko sprawdza: (1) czy proces już działa,
+    /// (2) czy binarka istnieje na dysku (żeby runtime availability filter pokazywał
+    /// modele antigravity-* nawet gdy IDE nie jest włączone — start headless nastąpi
+    /// automatycznie gdy user faktycznie wyśle prompt do modelu).
+    ///
+    /// Twardy timeout 3s na (1), żeby testy/quota tracker nie wisiały na PowerShell.
     pub async fn is_available() -> bool {
-        matches!(
+        // (A) LS już działa (IDE jest uruchomione, lub headless wystartował wcześniej)
+        if matches!(
             tokio::time::timeout(Duration::from_secs(3), discover_antigravity()).await,
             Ok(Ok(_))
-        )
+        ) {
+            return true;
+        }
+        // (B) Binarka language_server.exe istnieje → można uruchomić headless
+        find_language_server_binary().is_ok()
     }
 
     /// Pobiera listę dostępnych modeli z language server
@@ -522,13 +546,33 @@ fn parse_grpc_web_frame(data: &[u8]) -> Result<Vec<u8>> {
 /// Uruchamia language_server.exe w trybie standalone (jak Antigravity IDE to robi).
 /// Zwraca (port, csrf_token) gdy LS zacznie nasłuchiwać.
 async fn start_standalone_ls() -> Result<(u16, String)> {
+    // 0. Jeśli LS już żyje z poprzedniej sesji a recover_standalone_from_state() nie znalazł
+    //    z jakiegoś powodu — spróbuj jeszcze raz bezpośrednio (szybki check).
+    if let Some(state) = load_standalone_state_from_disk() {
+        if try_grpc_web_port(state.0, &state.1).await.is_ok() {
+            return Ok(state);
+        }
+    }
+
     // 1. Znajdź binary language_server.exe
     let ls_path = find_language_server_binary()?;
     eprintln!("Antigravity: uruchamiam LS standalone: {}", ls_path.display());
 
     // 2. Generuj CSRF token (UUID v4 bez myślników, jak IDE)
     let csrf_token = uuid::Uuid::new_v4().simple().to_string();
-    let port: u16 = 13443; // stały port (jak IDE używa https_server_port)
+    // Szukaj wolnego portu zaczynając od 13443 (do 5 kolejnych)
+    let base_port: u16 = 13443;
+    let mut chosen_port: Option<u16> = None;
+    for offset in 0..5u16 {
+        let candidate = base_port + offset;
+        if is_port_free(candidate).await {
+            chosen_port = Some(candidate);
+            break;
+        }
+    }
+    let port = chosen_port.ok_or_else(|| anyhow!(
+        "Wszystkie porty 13443-13447 są zajęte. Zamknij stare language_server.exe lub uruchom Antigravity IDE ręcznie."
+    ))?;
 
     // 3. Argumenty — dokładnie jak languageServer.js w Antigravity IDE
     let mut cmd = tokio::process::Command::new(&ls_path);
@@ -553,17 +597,76 @@ async fn start_standalone_ls() -> Result<(u16, String)> {
     let _child = cmd.spawn()
         .map_err(|e| anyhow!("Nie można uruchomić language_server.exe: {e}"))?;
 
-    // 4. Czekaj aż LS zacznie nasłuchiwać (max 15s)
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    // 4. Czekaj aż LS zacznie nasłuchiwać (max 45s — Defender/JIT potrzebuje więcej na zimnym starcie)
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
     loop {
         if std::time::Instant::now() > deadline {
-            bail!("language_server.exe nie wystartował w 15s — timeout");
+            bail!("language_server.exe nie wystartował w 45s — timeout (antywirus lub brak uprawnień)");
         }
         if try_grpc_web_port(port, &csrf_token).await.is_ok() {
             eprintln!("Antigravity: LS nasłuchuje na porcie {port}");
             return Ok((port, csrf_token));
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Szybki check czy port jest wolny (próba połączenia TCP — jeśli się uda = port jest ZAJĘTY)
+async fn is_port_free(port: u16) -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration as StdDur;
+    let addr = format!("127.0.0.1:{}", port);
+    matches!(
+        tokio::time::timeout(
+            StdDur::from_millis(200),
+            tokio::task::spawn_blocking(move || TcpStream::connect_timeout(&addr.parse().unwrap(), StdDur::from_millis(150)))
+        ).await,
+        Ok(Ok(Err(_))) | Err(_) | Ok(Err(_))
+    )
+}
+
+// ─── Stan standalone LS (odzyskiwanie między sesjami) ──────────────────
+
+fn opencode_rs_home() -> std::path::PathBuf {
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        let d = user_dirs.home_dir().join(".opencode-rs");
+        std::fs::create_dir_all(&d).ok();
+        return d;
+    }
+    let d = std::path::PathBuf::from(".opencode-rs");
+    std::fs::create_dir_all(&d).ok();
+    d
+}
+
+fn state_file_path() -> std::path::PathBuf {
+    opencode_rs_home().join("antigravity_state.json")
+}
+
+fn load_standalone_state_from_disk() -> Option<(u16, String)> {
+    let data = std::fs::read_to_string(state_file_path()).ok()?;
+    #[derive(Deserialize)]
+    struct State { port: u16, csrf_token: String }
+    let s: State = serde_json::from_str(&data).ok()?;
+    Some((s.port, s.csrf_token))
+}
+
+fn save_standalone_state(port: u16, csrf_token: &str) {
+    #[derive(Serialize)]
+    struct State<'a> { port: u16, csrf_token: &'a str }
+    let s = State { port, csrf_token };
+    if let Ok(json) = serde_json::to_string_pretty(&s) {
+        std::fs::write(state_file_path(), json).ok();
+    }
+}
+
+async fn recover_standalone_from_state() -> Option<(u16, String)> {
+    let (port, csrf) = load_standalone_state_from_disk()?;
+    if try_grpc_web_port(port, &csrf).await.is_ok() {
+        Some((port, csrf))
+    } else {
+        // stan nieaktualny (proces zginął) — wyczyść plik
+        std::fs::remove_file(state_file_path()).ok();
+        None
     }
 }
 

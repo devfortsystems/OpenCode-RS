@@ -178,7 +178,7 @@ impl MemoryBlocks {
              \n\
              Pełna treść ({char_count} znaków) jest w **DevFortDB**:\n\
              \n\
-             - Baza: `.opencode/db/opencode.mdb`\n\
+             - Baza: `.opencode-rs/db/`\n\
              - Namespace: `memory`\n\
              - Klucz: `{label}`\n\
              - Odczyt: `opencode` → komenda `/memory show {label}`\n\
@@ -417,7 +417,7 @@ impl MemoryBlocks {
         // 1b. Plan projektu (persistentny, per-projekt)
         let plan = ProjectPlan::load(&self.work_dir);
         let (plan_total, plan_done) = plan.stats();
-        out.push_str(&format!("📋 Plan projektu (.opencode/plan.md, {plan_done}/{plan_total} kroków ukończonych):\n"));
+        out.push_str(&format!("📋 Plan projektu (.opencode-rs/plan.md, {plan_done}/{plan_total} kroków ukończonych):\n"));
         if plan.goal.is_empty() && plan.steps.is_empty() && plan.notes.is_empty() {
             out.push_str("└── (brak planu — użyj /plan <instrukcja> lub tools plan_set/plan_add_step)\n");
         } else {
@@ -465,7 +465,7 @@ impl MemoryBlocks {
         }
         out.push_str(":\n");
         if non_learned.is_empty() && learned.is_empty() {
-            out.push_str("└── (brak skilli — dodaj .roo/skills/<name>/SKILL.md lub .opencode/skills/*.md)\n");
+            out.push_str("└── (brak skilli — dodaj .roo/skills/<name>/SKILL.md lub .opencode-rs/skills/*.md)\n");
         } else if non_learned.is_empty() {
             out.push_str("└── (tylko learned skilli — patrz wyżej)\n");
         } else {

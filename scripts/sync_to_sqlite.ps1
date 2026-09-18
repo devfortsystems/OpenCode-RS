@@ -80,6 +80,10 @@ if (Test-Path $BridgeSrc) {
 
 # Synchronizacja dokumentacji
 Copy-Item -Path (Join-Path $Root "DISTRIBUTION.md") -Destination (Join-Path $SqliteDir "DISTRIBUTION.md") -Force
+Copy-Item -Path (Join-Path $Root "AGENTS.md") -Destination (Join-Path $SqliteDir "AGENTS.md") -Force
+if (Test-Path (Join-Path $Root "Dockerfile")) {
+    Copy-Item -Path (Join-Path $Root "Dockerfile") -Destination (Join-Path $SqliteDir "Dockerfile") -Force
+}
 
 Write-Host "✅ Zsynchronizowano $CopiedCount plików (pominięto $SkippedCount bazodanowych)." -ForegroundColor Green
 

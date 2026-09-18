@@ -5,7 +5,7 @@
 ```bash
 cargo check                  # ~17s — szybki check
 cargo build                  # pełny build, zero ostrzeżeń
-cargo test                   # 163 testów, ~25s
+cargo test                   # 209 testów --lib, ~30s
 cargo test memory::          # tylko memory (19 testów, w tym /palace)
 cargo test skills::          # tylko skills (5 testów)
 cargo test providers::       # tylko providers (cli_subprocess + devin_cloud + antigravity)
@@ -249,14 +249,13 @@ Plan i memory blocks są wstrzykiwane w prompt delegatów (Devin ACP/Cloud) prze
 - [x] Quota & Subscription Tracker (`src/quota.rs`) — monitorowanie pakietów (OpenRouter saldo USD, Google Gemini 1500 RPD, Antigravity 32 modele bez limitu, OpenAI/Anthropic/Devin, daty odnowienia i statusy)
 - [x] Windows System Tray (`src/tray.rs`) — daemon zasobnika systemowego (`opencode --tray` / `opencode tray`), menu podręczne (Web UI, TUI, ~/.opencode-rs, autostart Windows, exit), podwójny klik do Web UI (<5 MB RAM)
 - [x] Quasar Web UI (Vue 3) + ApexCharts (`src/web/dashboard.html` & `src/web/mod.rs`) — 3-kolumnowe IDE, pasek kart projektów, eksplorator plików `q-tree`, edytor kodu, czat AI z auto-zapisem draftu oraz wykresy kołowe limitów ApexCharts
-- [x] Łącznie 216 testów przechodzących w 100%, pełna synchronizacja z `sqlite_version/` (58 zsynchronizowanych plików)
+- [x] Łącznie 209 testów `--lib` przechodzących w 100%, pełna synchronizacja z `sqlite_version/` (58 zsynchronizowanych plików, omija `database.rs` + `archival.rs`)
+- [x] Permission `"ask"` — dialog TUI (Enter = allow, Esc = deny), timeout 120 s; headless = allow
+- [x] ACP `session/cancel` — abortuje bieżący `session/prompt` (AbortHandle per session_id, `StopReason::Cancelled`)
+- [x] Zapis ścieżek UI: `~/.opencode-rs/` / `.opencode-rs/` (legacy `.opencode/` tylko odczyt)
+- [x] Dockerfile + `.dockerignore` (Web UI na porcie 7711; 8765-8767 zarezerwowane dla Bridge Extension)
 
 ### Do zrobienia
 
-### 1. Push na origin
-- 3 commity lokalne, nie pushowane:
-  1. `024899f` fix: clean compiler warnings, unreachable /agent pattern and test timeouts
-  2. `07f8ac9` feat: IDE mode (F3), RepoMap AST index, VSIX manager, web_fetch tool, VS Code Dark+ syntax highlighting
-  3. `5a0cff7` feat: TextMate/syntect VS Code syntax highlighting with official Dark+ palette
-- **Koszt:** trywialny (wymaga zgody — nie pushować bez pytania)
+(puste — backlog zrealizowany)
 

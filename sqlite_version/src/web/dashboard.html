@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenCode-RS — Universal AI Coding IDE</title>
+  <title>OpenCode-RS  Universal AI Coding IDE</title>
   
   <!-- Google Fonts: Inter & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,136 +19,400 @@
 
   <style>
     :root {
-      --q-primary: #6366f1;
-      --q-secondary: #0ea5e9;
-      --q-accent: #8b5cf6;
-      --q-dark: #090a0f;
-      --q-dark-page: #07080c;
+      --q-primary: #8b5cf6;
+      --q-secondary: #22d3ee;
+      --q-accent: #ec4899;
+      --q-info: #38bdf8;
+      --q-positive: #4ade80;
+      --q-negative: #f87171;
+      --q-warning: #fbbf24;
+      --q-dark: #07080d;
+      --q-dark-page: #07080d;
+      --brand-gradient: linear-gradient(135deg, #8b5cf6 0%, #22d3ee 100%);
+      --panel-bg: rgba(14, 17, 27, 0.72);
+      --panel-border: rgba(255, 255, 255, 0.07);
+      --panel-border-strong: rgba(139, 92, 246, 0.25);
     }
-    * { box-sizing: border-box; font-family: 'Inter', sans-serif; }
-    code, pre, .code-font { font-family: 'JetBrains Mono', monospace; }
-    
+    * { box-sizing: border-box; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    code, pre, .code-font, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; }
+
     body.body--dark {
-      background: #07080c;
-      color: #f1f5f9;
+      background:
+        radial-gradient(1200px 700px at 85% -10%, rgba(34, 211, 238, 0.09), transparent 60%),
+        radial-gradient(900px 500px at -10% 110%, rgba(139, 92, 246, 0.11), transparent 60%),
+        linear-gradient(180deg, #07080d 0%, #0a0b12 100%);
+      background-attachment: fixed;
+      color: #e5e7eb;
+      overflow: hidden;
     }
+
+    /* Header  modern glass + glow gradient border bottom */
     .glass-header {
-      background: rgba(13, 15, 23, 0.85) !important;
-      backdrop-filter: blur(16px);
-      border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+      background: linear-gradient(180deg, rgba(9, 10, 18, 0.88) 0%, rgba(9, 10, 18, 0.75) 100%) !important;
+      backdrop-filter: saturate(180%) blur(20px) !important;
+      -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+      border-bottom: 1px solid transparent;
+      background-clip: padding-box;
+      position: relative;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 32px rgba(0, 0, 0, 0.35);
     }
-    .glass-card {
-      background: rgba(18, 21, 33, 0.75);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(99, 102, 241, 0.2);
+    .glass-header::after {
+      content: "";
+      position: absolute;
+      left: 0; right: 0; bottom: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(139,92,246,0.55), rgba(34,211,238,0.55), transparent);
+      pointer-events: none;
+    }
+    .brand-logo {
+      width: 36px; height: 36px;
       border-radius: 10px;
+      background: var(--brand-gradient);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow:
+        0 2px 10px rgba(139,92,246,0.35),
+        0 0 0 1px rgba(255,255,255,0.08) inset;
+      position: relative;
     }
+    .brand-logo svg { width: 20px; height: 20px; color: #fff; }
+    .brand-name {
+      font-weight: 700;
+      font-size: 0.98rem;
+      letter-spacing: -0.01em;
+      background: var(--brand-gradient);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand-sub {
+      font-size: 10.5px;
+      color: #94a3b8;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+
+    /* Panels  big radius, glass, soft shadow */
+    .glass-card {
+      background: var(--panel-bg);
+      backdrop-filter: saturate(140%) blur(14px);
+      -webkit-backdrop-filter: saturate(140%) blur(14px);
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.04) inset,
+        0 10px 40px -15px rgba(0, 0, 0, 0.6);
+    }
+    .glass-card:hover {
+      border-color: var(--panel-border-strong);
+      transition: border-color .2s ease;
+    }
+
+    /* Editor pane */
     .editor-pane {
-      background: #0d0f17;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 8px;
+      background: #0a0c14;
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
       overflow: auto;
-      font-size: 13px;
-      line-height: 1.6;
+      font-size: 13.5px;
+      line-height: 1.65;
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.03) inset,
+        0 8px 28px -18px rgba(0, 0, 0, 0.7);
     }
-    .line-number {
-      color: #4b5563;
+    .editor-pane .line-number {
+      color: #475569;
       user-select: none;
-      padding-right: 12px;
+      padding-right: 14px;
       text-align: right;
       display: inline-block;
-      min-width: 32px;
+      min-width: 40px;
     }
+
+    /* Chat bubbles  modern iMessage-like */
     .chat-bubble-user {
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.25));
-      border: 1px solid rgba(99, 102, 241, 0.4);
-      border-radius: 12px 12px 2px 12px;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.28) 0%, rgba(236, 72, 153, 0.22) 100%);
+      border: 1px solid rgba(139, 92, 246, 0.35);
+      border-radius: 18px 18px 4px 18px;
+      box-shadow: 0 6px 18px -10px rgba(139, 92, 246, 0.55);
+      backdrop-filter: blur(6px);
     }
     .chat-bubble-assistant {
-      background: rgba(22, 27, 44, 0.85);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 12px 12px 12px 2px;
+      background: linear-gradient(180deg, rgba(20, 24, 37, 0.85) 0%, rgba(17, 20, 31, 0.85) 100%);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px 18px 18px 4px;
+      box-shadow: 0 6px 22px -16px rgba(0, 0, 0, 0.7);
+    }
+    .chat-role-label {
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      opacity: 0.85;
+    }
+    .chat-meta {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    /* Tabs  modern pill-like / underline gradient */
+    .q-tab {
+      font-weight: 500 !important;
+      letter-spacing: -0.005em !important;
+      height: 38px !important;
+      font-size: 13px !important;
     }
     .q-tab--active {
-      color: #818cf8 !important;
-      border-bottom: 2px solid #6366f1;
-      background: rgba(99, 102, 241, 0.1);
+      color: #fff !important;
+      position: relative;
     }
-    .apexcharts-canvas {
-      margin: 0 auto;
+    .q-tab--active::after {
+      content: "";
+      position: absolute;
+      left: 12px; right: 12px; bottom: 6px; height: 2px;
+      background: var(--brand-gradient);
+      border-radius: 2px;
+    }
+    .q-tab-panels { padding: 10px; }
+
+    /* Buttons  pill gradient accents */
+    .btn-primary {
+      background: var(--brand-gradient) !important;
+      color: #fff !important;
+      font-weight: 600;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 16px -4px rgba(139, 92, 246, 0.55) !important;
+      transition: transform .08s ease, box-shadow .2s ease;
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px -4px rgba(139, 92, 246, 0.65) !important; }
+    .btn-ghost {
+      border-radius: 10px !important;
+      background: rgba(255,255,255,0.03) !important;
+      border: 1px solid rgba(255,255,255,0.06) !important;
+    }
+
+    /* Inputs  less harsh */
+    .q-field--dark .q-field__control,
+    .q-field--dark .q-field__marginal {
+      color: #cbd5e1 !important;
+    }
+    .q-field--outlined .q-field__control { border-radius: 12px !important; }
+    .q-field--dark.q-field--outlined .q-field__control {
+      background: rgba(14, 17, 27, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .q-field--dark.q-field--focused.q-field--outlined .q-field__control,
+    .q-field--dark.q-field--outlined .q-field__control:hover {
+      border-color: rgba(139, 92, 246, 0.45) !important;
+      background: rgba(14, 17, 27, 0.8);
+    }
+
+    /* Scrollbars  thin modern */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, rgba(139,92,246,0.35), rgba(34,211,238,0.30));
+      border-radius: 8px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, rgba(139,92,246,0.55), rgba(34,211,238,0.50));
+      background-clip: padding-box;
+      border: 2px solid transparent;
+    }
+
+    /* ApexCharts panel glow */
+    .apexcharts-canvas { margin: 0 auto; }
+    .quota-card {
+      background: linear-gradient(135deg, rgba(139,92,246,0.10), rgba(34,211,238,0.08));
+      border: 1px solid rgba(139,92,246,0.18);
+      border-radius: 14px;
+    }
+
+    /* Glow badges */
+    .badge-online {
+      background: linear-gradient(135deg, rgba(74, 222, 128, 0.22), rgba(34, 211, 238, 0.18)) !important;
+      border: 1px solid rgba(74, 222, 128, 0.35) !important;
+      color: #bbf7d0 !important;
+    }
+    .badge-connecting {
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.22), rgba(249, 115, 22, 0.18)) !important;
+      border: 1px solid rgba(251, 191, 36, 0.35) !important;
+      color: #fde68a !important;
+    }
+    .badge-offline {
+      background: linear-gradient(135deg, rgba(248, 113, 113, 0.22), rgba(236, 72, 153, 0.18)) !important;
+      border: 1px solid rgba(248, 113, 113, 0.35) !important;
+      color: #fecaca !important;
+    }
+
+    /* Divider glow */
+    .divider-gradient {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(139,92,246,0.35), rgba(34,211,238,0.35), transparent);
+      margin: 8px 0;
     }
   </style>
 </head>
 <body class="body--dark">
   <div id="q-app">
     <q-layout view="hHh lpR fFf">
-      
-      <!-- GÓRNY PASEK NAWIGACJI -->
-      <q-header elevated class="glass-header text-white">
-        <q-toolbar class="q-py-xs">
-          <q-avatar size="32px" color="primary" text-color="white" icon="terminal" class="q-mr-sm shadow-2"></q-avatar>
-          <q-toolbar-title class="row items-center text-weight-bold" style="font-size: 1.1rem;">
-            OpenCode<span class="text-indigo-4">-RS</span>
-            <q-badge color="indigo-7" class="q-ml-sm text-caption">v1.18.25</q-badge>
-            <q-badge color="positive" outline class="q-ml-sm text-caption">
-              <q-icon name="circle" size="8px" class="q-mr-xs" color="positive"></q-icon>
-              Online (Port {{ status.port || 8765 }})
-            </q-badge>
-          </q-toolbar-title>
 
-          <!-- Przyciski akcji w nagłówku -->
+      <!-- GRNY PASEK NAWIGACJI  nowoczesny, glass + logo gradient -->
+      <q-header elevated class="glass-header text-white">
+        <q-toolbar class="q-py-xs" style="padding: 10px 18px;">
+          <div class="row items-center no-wrap q-gutter-md">
+            <div class="brand-logo" title="OpenCode-RS  Universal AI Coding IDE">
+              <!-- Logo: bracket '<>' + kropek (kropka kodu) -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 4 2 12 9 20"></polyline>
+                <polyline points="15 4 22 12 15 20"></polyline>
+                <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"></circle>
+              </svg>
+            </div>
+            <div class="column" style="line-height: 1.1;">
+              <div class="brand-name">
+                OpenCode<span style="-webkit-text-fill-color:#cbd5e1;color:#cbd5e1;opacity:.55;">-RS</span>
+              </div>
+              <div class="row items-center no-wrap q-mt-xs" style="gap:10px;">
+                <span class="brand-sub">Universal AI Coding IDE</span>
+                <span style="font-size:10px;color:#475569;"></span>
+                <span class="mono" style="font-size:10.5px;color:#94a3b8;letter-spacing:0.02em;">v1.18.25</span>
+                <span style="font-size:10px;color:#475569;"></span>
+                <span class="mono" style="font-size:10.5px;color:#94a3b8;">{{ status.project || 'opencode-rs' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connection status badge  glowing -->
+          <q-space></q-space>
+          <q-badge
+            :class="connectionState === 'online' ? 'badge-online' : (connectionState === 'connecting' ? 'badge-connecting' : 'badge-offline')"
+            class="q-mr-md"
+            style="padding:7px 12px; border-radius:999px; font-size:12px; letter-spacing:-0.01em;"
+            outline
+          >
+            <span class="row items-center no-wrap" style="gap:7px;">
+              <span
+                class="inline-block"
+                :style="connectionState === 'online'
+                  ? 'width:7px;height:7px;border-radius:999px;background:#4ade80;box-shadow:0 0 8px #4ade80;'
+                  : (connectionState === 'connecting'
+                      ? 'width:7px;height:7px;border-radius:999px;background:#fbbf24;box-shadow:0 0 8px #fbbf24;'
+                      : 'width:7px;height:7px;border-radius:999px;background:#f87171;box-shadow:0 0 8px #f87171;')"
+              ></span>
+              <span v-if="connectionState === 'connecting'" class="inline-block q-spin text-amber-3" style="width:7px;height:7px;"></span>
+              <span class="text-weight-600">{{ connectionStateLabel }}</span>
+              <span class="mono" style="opacity:.75;">:{{ status.port || 7711 }}</span>
+            </span>
+          </q-badge>
+
+          <!-- Przyciski akcji  nowy styl pill/gradient -->
           <div class="row q-gutter-sm items-center">
-            <q-btn flat dense color="amber-3" icon="monetization_on" label="Cennik & Modele" @click="showPricingModal = true" class="text-weight-medium">
-              <q-tooltip>Lista działających modeli AI u wszystkich dostawców i ich dokładny cennik</q-tooltip>
+            <q-btn dense unelevated no-caps icon="payments" label="Cennik" @click="showPricingModal = true" class="btn-ghost" text-color="primary">
+              <q-tooltip>Lista dzialajacych modeli AI u wszystkich dostawclw i ich dokladny cennik</q-tooltip>
             </q-btn>
-            <q-btn flat dense color="indigo-3" icon="insights" label="Pakiety i Limity" @click="showQuotaModal = true" class="text-weight-medium">
-              <q-tooltip>Sprawdź stan środków, limity dzienne i daty odnowienia pakietów</q-tooltip>
+            <q-btn dense unelevated no-caps icon="speed" label="Limity" @click="showQuotaModal = true" class="btn-ghost" text-color="secondary">
+              <q-tooltip>Sprawd stan srodklw, limity dzienne i daty odnowienia pakietlw</q-tooltip>
             </q-btn>
-            <q-btn flat dense color="cyan-3" icon="folder_special" label="~/.opencode-rs" @click="openDataDir">
-              <q-tooltip>Otwórz katalog pamięci, bazy i kluczy API</q-tooltip>
+            <q-btn dense unelevated no-caps icon="folder_open" label="~/.opencode-rs" @click="openDataDir" class="btn-ghost" text-color="info">
+              <q-tooltip>Otwlrz katalog pamici, bazy i kluczy API</q-tooltip>
             </q-btn>
-            <q-btn flat round dense icon="refresh" @click="refreshAll">
-              <q-tooltip>Odśwież stan</q-tooltip>
+            <q-btn dense round flat icon="refresh" @click="refreshAll" color="grey-5">
+              <q-tooltip>Odswie stan</q-tooltip>
             </q-btn>
           </div>
         </q-toolbar>
 
-        <!-- PASEK KART PROJEKTÓW (MULTI-TAB WORKSPACE RESURRECT) -->
-        <div class="row items-center bg-dark q-px-sm" style="border-top: 1px solid rgba(255,255,255,0.06);">
-          <q-tabs v-model="activeTabId" dense no-caps inline-label class="text-grey-5 col" align="left">
-            <q-tab v-for="tab in workspace.tabs" :key="tab.id" :name="tab.id" class="q-px-md" @click="switchTab(tab.id)">
+        <!-- PASEK KART PROJEKTW (MULTI-TAB WORKSPACE RESURRECT)  modern tabs -->
+        <div class="row items-center q-px-sm" style="border-top: 1px solid rgba(255,255,255,0.04); padding-top:2px; padding-bottom:2px; background: rgba(7,8,13,0.45);">
+          <q-tabs v-model="activeTabId" no-caps inline-label class="col" align="left" narrow-indicator>
+            <q-tab v-for="tab in workspace.tabs" :key="tab.id" :name="tab.id" class="q-pl-md q-pr-sm" @click="switchTab(tab.id)">
               <template v-slot:default>
-                <q-icon name="code" size="16px" class="q-mr-xs" color="indigo-4"></q-icon>
-                <span class="text-weight-medium text-white q-mr-xs">{{ tab.title }}</span>
-                <q-badge color="purple-9" text-color="purple-2" class="text-caption q-mr-sm" style="font-size: 10px;">
-                  {{ formatModelName(tab.model) }}
-                </q-badge>
-                <q-btn flat round dense size="xs" icon="close" color="grey-6" @click.stop="closeTab(tab.id)">
-                  <q-tooltip>Zamknij kartę</q-tooltip>
-                </q-btn>
+                <div class="row items-center no-wrap" style="gap:8px;">
+                  <q-icon name="code" size="15px" color="secondary"></q-icon>
+                  <span class="text-weight-medium text-white q-mr-xs" style="font-size:13px;">{{ tab.title }}</span>
+                  <span class="mono" style="font-size:10.5px; padding:2px 8px; border-radius:999px; background: rgba(139,92,246,0.16); border: 1px solid rgba(139,92,246,0.25); color:#c4b5fd;">
+                    {{ formatModelName(tab.model) }}
+                  </span>
+                  <q-btn flat round dense size="xs" icon="close" color="grey-6" @click.stop="closeTab(tab.id)">
+                    <q-tooltip>Zamknij kart</q-tooltip>
+                  </q-btn>
+                </div>
               </template>
             </q-tab>
           </q-tabs>
-          <q-btn flat dense color="primary" icon="add" label="Nowa Karta" @click="showNewTabDialog = true" class="q-ml-sm">
+          <q-btn dense no-caps unelevated icon="add" label="Nowa Karta" @click="showNewTabDialog = true" class="btn-primary" style="padding: 4px 12px; height:30px; margin:2px 10px;">
             <q-tooltip>Otwórz nowy projekt na osobnym katalogu i z osobnym modelem</q-tooltip>
           </q-btn>
         </div>
       </q-header>
 
-      <!-- GŁÓWNY OBSZAR ROBOCZY IDE (3 KOLUMNY) -->
-      <q-page-container>
-        <q-page class="q-pa-sm row no-wrap" style="height: calc(100vh - 90px);">
-          
-          <!-- KOLUMNA 1: Eksplorator plików projektu (20%) -->
-          <div class="col-2 q-mr-sm glass-card column q-pa-sm">
-            <div class="row items-center justify-between q-pb-xs text-caption text-grey-4 text-weight-bold" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-              <span class="row items-center">
-                <q-icon name="folder" size="16px" color="amber-7" class="q-mr-xs"></q-icon>
-                PLIKI PROJEKTU
-              </span>
-              <q-btn flat round dense icon="refresh" size="xs" @click="fetchFileTree"></q-btn>
+      <!-- BANNER OFFLINE  modern glass + glow border gradient -->
+      <div v-if="connectionState === 'offline'">
+        <div style="background: linear-gradient(135deg, rgba(127,29,29,0.42), rgba(124,45,18,0.38)); padding:16px 22px; border-bottom:1px solid rgba(248,113,113,0.25); backdrop-filter: blur(10px);">
+          <div class="row items-center no-wrap" style="gap:16px;">
+            <div style="background: rgba(239,68,68,0.18); border: 1px solid rgba(248,113,113,0.35); width:44px; height:44px; border-radius: 12px; display:flex; align-items:center; justify-content:center;">
+              <q-icon name="wifi_off" color="red-4" size="22px"></q-icon>
             </div>
-            <div class="col overflow-auto q-mt-xs text-caption">
+            <div class="col">
+              <div class="text-weight-700 text-red-2" style="font-size:1.02rem;">
+                Błąd połączenia z Web Companion: Failed to fetch
+              </div>
+              <div class="text-caption" style="color:#cbd5e1; margin-top:3px; opacity:0.85;">
+                Dashboard nie może połączyć się z serwerem Web Companion. Otwórz PowerShell i uruchom <strong>jedną z poniższych komend</strong> — dashboard znajdzie serwer automatycznie na portach 7711-7715.
+              </div>
+            </div>
+            <q-btn class="btn-primary" dense icon="refresh" label="Spróbuj ponownie" @click="refreshAll" style="padding: 6px 16px; height:36px;"></q-btn>
+          </div>
+          <div class="divider-gradient"></div>
+          <div class="row" style="gap:14px;">
+            <div class="col-4" style="background: rgba(8, 10, 18, 0.55); border: 1px solid rgba(248,113,113,0.18); border-radius: 14px; padding:12px 16px;">
+              <div class="text-caption text-weight-600 mb-1" style="color:#86efac;">s Opcja 1 &nbsp;&nbsp; RELEASE (zalecana)</div>
+              <div class="mono" style="color:#fecaca; font-size:11.5px; padding:10px 12px; background: rgba(0,0,0,0.35); border-radius:10px; border:1px solid rgba(255,255,255,0.06); line-height:1.5;">
+target\release\opencode-rs.exe ^<br>
+&nbsp;&nbsp;--workdir . --web
+              </div>
+            </div>
+            <div class="col-4" style="background: rgba(8, 10, 18, 0.55); border: 1px solid rgba(248,113,113,0.18); border-radius: 14px; padding:12px 16px;">
+              <div class="text-caption text-weight-600 mb-1" style="color:#fcd34d;"> Opcja 2 &nbsp;&nbsp; CARGO DEV</div>
+              <div class="mono" style="color:#fecaca; font-size:11.5px; padding:10px 12px; background: rgba(0,0,0,0.35); border-radius:10px; border:1px solid rgba(255,255,255,0.06); line-height:1.5;">
+cargo run --release -- ^<br>
+&nbsp;&nbsp;--workdir . --web
+              </div>
+            </div>
+            <div class="col-4" style="background: rgba(8, 10, 18, 0.55); border: 1px solid rgba(248,113,113,0.18); border-radius: 14px; padding:12px 16px;">
+              <div class="text-caption text-weight-600 mb-1" style="color:#a5f3fc;">z Opcja 3 &nbsp;&nbsp; TRAY (stale w tle)</div>
+              <div class="mono" style="color:#fecaca; font-size:11.5px; padding:10px 12px; background: rgba(0,0,0,0.35); border-radius:10px; border:1px solid rgba(255,255,255,0.06); line-height:1.5;">
+target\release\opencode-rs.exe tray
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- GŁÓWNY OBSZAR ROBOCZY IDE (3 KOLUMNY) – nowe proporcje 24% / 44% / 32% -->
+      <q-page-container>
+        <q-page class="row no-wrap" style="height: calc(100vh - 90px); padding: 14px 18px 18px; gap: 14px;">
+
+          <!-- KOLUMNA 1: Eksplorator plików projektu (24%) – nowy header gradient -->
+          <div class="glass-card column" style="width: 24%; flex-shrink:0; flex-grow:0; padding: 4px 4px 10px;">
+            <div class="row items-center justify-between q-px-md q-py-sm" style="border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div class="row items-center q-gutter-sm">
+                <div style="width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg, rgba(251,191,36,0.18), rgba(249,115,22,0.18));border:1px solid rgba(251,191,36,0.25);display:flex;align-items:center;justify-content:center;">
+                  <q-icon name="folder" size="14px" color="amber-5"></q-icon>
+                </div>
+                <div class="column" style="line-height: 1.1;">
+                  <span class="text-weight-700" style="font-size: 12.5px; letter-spacing:-0.01em;">Pliki projektu</span>
+                  <span class="mono text-grey-6" style="font-size: 10.5px;">Explorer</span>
+                </div>
+              </div>
+              <q-btn flat round dense size="xs" icon="refresh" color="grey-5" @click="fetchFileTree" style="border-radius:8px;">
+                <q-tooltip>Odśwież drzewo plików</q-tooltip>
+              </q-btn>
+            </div>
+            <div class="col overflow-auto q-mt-xs text-caption" style="padding: 4px 6px;">
               <q-tree
                 :nodes="fileTree"
                 node-key="path"
@@ -160,40 +424,48 @@
                 @update:selected="onFileSelect"
               >
                 <template v-slot:default-header="prop">
-                  <div class="row items-center q-gutter-xs cursor-pointer">
-                    <q-icon :name="prop.node.is_dir ? 'folder' : 'description'" :color="prop.node.is_dir ? 'amber-6' : 'blue-4'" size="16px"></q-icon>
-                    <span>{{ prop.node.label }}</span>
+                  <div class="row items-center q-gutter-xs cursor-pointer" style="padding: 3px 6px; border-radius: 8px; transition: background .12s ease;"
+                       @mouseenter="$event.currentTarget.style.background='rgba(255,255,255,0.04)'"
+                       @mouseleave="$event.currentTarget.style.background='transparent'">
+                    <q-icon :name="prop.node.is_dir ? 'folder' : 'description'" :color="prop.node.is_dir ? 'amber-5' : 'cyan-4'" size="15px"></q-icon>
+                    <span class="text-weight-500" style="color:#e5e7eb;">{{ prop.node.label }}</span>
                   </div>
                 </template>
               </q-tree>
             </div>
-            <div class="text-caption text-grey-6 q-pt-xs ellipsis" style="font-size: 10px;" :title="activeTab?.project_path">
-              📁 {{ activeTab?.project_path || status.project }}
+            <div class="mono q-px-md q-py-xs" style="font-size: 10.5px; color: #64748b; border-top: 1px solid rgba(255,255,255,0.04); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" :title="activeTab?.project_path">
+              z {{ activeTab?.project_path || status.project }}
             </div>
           </div>
 
-          <!-- KOLUMNA 2: Edytor kodu (48%) -->
-          <div class="col-6 q-mr-sm glass-card column q-pa-sm">
-            <div class="row items-center justify-between q-pb-xs text-caption text-grey-4 text-weight-bold" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-              <span class="row items-center">
-                <q-icon name="edit_note" size="18px" color="indigo-4" class="q-mr-xs"></q-icon>
-                {{ currentFile ? currentFile.split(/[\\/]/).pop() : 'EDYTORSKI PODGLĄD KODU' }}
-                <q-badge v-if="isFileModified" color="amber-9" class="q-ml-xs text-caption" style="font-size: 10px;">● Niezapisane</q-badge>
-              </span>
-              <div class="row items-center q-gutter-xs">
-                <span class="text-grey-6 text-caption ellipsis" style="max-width: 200px;" :title="currentFile">{{ currentFile || 'Wybierz plik z drzewa' }}</span>
-                <q-btn v-if="currentFile" dense flat size="sm" icon="save" color="primary" label="Zapisz (Ctrl+S)" @click="saveCurrentFile" :loading="isSaving">
+          <!-- KOLUMNA 2: Edytor kodu (44%)  wiksze zaokraglenia, glass glow -->
+          <div class="glass-card column" style="width: calc(44% - 8px); flex-grow:1; flex-shrink:0; padding: 4px 4px 10px;">
+            <div class="row items-center justify-between q-px-md q-py-sm" style="border-bottom:1px solid rgba(255,255,255,0.06); gap:10px;">
+              <div class="row items-center q-gutter-sm">
+                <div style="width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg, rgba(139,92,246,0.20), rgba(34,211,238,0.18));border:1px solid rgba(139,92,246,0.28);display:flex;align-items:center;justify-content:center;">
+                  <q-icon name="edit_note" size="14px" color="purple-3"></q-icon>
+                </div>
+                <div class="column" style="line-height: 1.1;">
+                  <span class="text-weight-700" style="font-size: 12.5px; letter-spacing:-0.01em;">
+                    {{ currentFile ? currentFile.split(/[\\/]/).pop() : 'Edytorski podgląd kodu' }}
+                  </span>
+                  <q-badge v-if="isFileModified" color="amber-10" text-color="amber-2" class="q-mt-xs mono" style="font-size: 9.5px; width:fit-content;">● Niezapisane</q-badge>
+                </div>
+              </div>
+              <div class="row items-center q-gutter-sm">
+                <span class="mono text-grey-5" style="font-size: 11px; max-width: 220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" :title="currentFile">{{ currentFile || 'Wybierz plik z drzewa' }}</span>
+                <q-btn v-if="currentFile" dense no-caps size="sm" icon="save" label="Zapisz" @click="saveCurrentFile" :loading="isSaving" class="btn-ghost" text-color="positive">
                   <q-tooltip>Zapisz plik na dysku hosta (Ctrl+S)</q-tooltip>
                 </q-btn>
               </div>
             </div>
-            <div class="col editor-pane q-mt-xs q-pa-xs code-font column">
+            <div class="col editor-pane q-mt-xs code-font column" style="margin-left:6px; margin-right:6px;">
               <div v-if="currentFile" class="col column">
                 <textarea
                   v-model="fileContent"
                   class="col code-font text-caption text-white bg-transparent no-border q-pa-xs"
                   style="resize: none; outline: none; width: 100%; height: 100%; font-family: 'JetBrains Mono', Consolas, monospace; line-height: 1.5;"
-                  placeholder="Zawartość pliku..."
+                  placeholder="Zawartosc pliku..."
                   spellcheck="false"
                   @input="isFileModified = true"
                   @keydown.ctrl.s.prevent="saveCurrentFile"
@@ -206,62 +478,106 @@
             </div>
           </div>
 
-          <!-- KOLUMNA 3: Czat z Agentem AI (32%) -->
-          <div class="col-4 glass-card column q-pa-sm">
-            <div class="row items-center justify-between q-pb-xs text-caption text-grey-4 text-weight-bold" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-              <span class="row items-center">
-                <q-icon name="smart_toy" size="18px" color="positive" class="q-mr-xs"></q-icon>
-                CZAT AI — {{ formatModelName(activeTab?.model) }}
-              </span>
-              <q-select
-                v-model="selectedModel"
-                :options="modelCatalog"
-                option-value="id"
-                :option-label="opt => opt.price_display ? `${opt.name} (${opt.provider_label}) • ${opt.price_display}` : (opt.name || opt.id)"
-                dense
-                options-dense
-                dark
-                borderless
-                style="min-width: 180px; font-size: 11px;"
-                @update:model-value="onModelChange"
-              >
-                <template v-slot:option="scope">
-                  <q-item v-bind="scope.itemProps" dense>
-                    <q-item-section>
-                      <q-item-label class="text-weight-bold">{{ scope.opt.name }}</q-item-label>
-                      <q-item-label caption class="text-indigo-3">{{ scope.opt.provider_label }}</q-item-label>
-                    </q-item-section>
-                    <q-item-section side>
-                      <q-badge :color="scope.opt.is_free ? 'positive' : 'amber-8'" text-color="white">
-                        {{ scope.opt.price_display }}
-                      </q-badge>
-                    </q-item-section>
-                  </q-item>
-                </template>
-              </q-select>
-            </div>
-
-            <!-- Historia wiadomości -->
-            <div class="col overflow-auto q-my-xs q-pr-xs" id="chat-box">
-              <div v-for="(msg, idx) in messages" :key="idx" class="q-mb-sm">
-                <div :class="msg.role === 'user' ? 'chat-bubble-user q-pa-sm text-white' : 'chat-bubble-assistant q-pa-sm text-grey-3'">
-                  <div class="row items-center justify-between text-caption text-weight-bold q-mb-xs">
-                    <span :class="msg.role === 'user' ? 'text-indigo-3' : 'text-positive'">
-                      <q-icon :name="msg.role === 'user' ? 'person' : 'smart_toy'" size="14px" class="q-mr-xs"></q-icon>
-                      {{ msg.role === 'user' ? 'Ty' : (msg.role === 'assistant' ? formatModelName(activeTab?.model) : 'System') }}
-                    </span>
-                  </div>
-                  <div class="code-font text-caption" style="white-space: pre-wrap;">{{ msg.content }}</div>
+          <!-- KOLUMNA 3: Czat z Agentem AI (32%)  nowoczesne, dymki, glow header -->
+          <div class="glass-card column" style="width: 32%; flex-shrink:0; flex-grow:0; padding: 4px 4px 10px;">
+            <div class="row items-center justify-between q-px-md q-py-sm" style="border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div class="row items-center q-gutter-sm">
+                <div style="width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg, rgba(74,222,128,0.18), rgba(34,211,238,0.18));border:1px solid rgba(74,222,128,0.25);display:flex;align-items:center;justify-content:center;">
+                  <q-icon name="smart_toy" size="14px" color="green-4"></q-icon>
+                </div>
+                <div class="column" style="line-height: 1.1;">
+                  <span class="text-weight-700" style="font-size: 12.5px; letter-spacing:-0.01em;">Czat AI</span>
+                  <span class="mono text-grey-5" style="font-size: 10.5px;">{{ formatModelName(activeTab?.model) || 'wybierz model' }}</span>
                 </div>
               </div>
-              <div v-if="messages.length === 0" class="text-grey-6 text-center q-pt-xl">
-                <q-icon name="chat_bubble_outline" size="36px" color="grey-8"></q-icon>
-                <div class="q-mt-sm">Wpisz zadanie poniżej. Agent uruchomi narzędzia w katalogu tego projektu.</div>
+              <div class="row items-center q-gutter-xs">
+                <q-btn dense flat round icon="refresh" :disable="isStreaming" @click="refreshModels" size="14px" color="grey-5" style="border-radius:8px;">
+                  <q-tooltip>Odswie katalog modeli</q-tooltip>
+                </q-btn>
+                <span v-if="modelCatalog.length > 0" class="mono" style="font-size: 10.5px; color: #94a3b8;">
+                  {{ modelCatalog.length }} modeli
+                </span>
+                <span v-else class="text-amber-4" style="font-size:10.5px;">
+                  <q-icon name="sync" size="9px" spin class="q-mr-xs"></q-icon>laduj...
+                </span>
+                <q-select
+                  v-model="selectedModel"
+                  :options="modelCatalog"
+                  option-value="id"
+                  :option-label="opt => opt.price_display ? `${opt.name} (${opt.provider_label})  ${opt.price_display}` : (opt.name || opt.id)"
+                  dense
+                  options-dense
+                  dark
+                  borderless
+                  style="min-width: 190px; font-size: 11px; max-width: 250px;"
+                  @update:model-value="onModelChange"
+                >
+                  <template v-slot:option="scope">
+                    <q-item v-bind="scope.itemProps" dense style="border-radius: 10px; margin: 2px 0;">
+                      <q-item-section>
+                        <q-item-label class="text-weight-600" style="font-size: 12px;">{{ scope.opt.name }}</q-item-label>
+                        <q-item-label caption class="mono" style="color:#a5b4fc;">{{ scope.opt.provider_label }}</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-badge
+                          :color="scope.opt.is_free ? 'green-10' : 'amber-10'"
+                          text-color="white"
+                          style="font-size: 9.5px; border-radius:999px; padding:2px 7px;"
+                          outline
+                        >
+                          {{ scope.opt.price_display }}
+                        </q-badge>
+                      </q-item-section>
+                    </q-item>
+                  </template>
+                </q-select>
               </div>
             </div>
 
-            <!-- Pole wprowadzania promptu z auto-zapisem draftu (WezTerm resurrect) -->
-            <div class="column q-gutter-xs">
+            <!-- Historia wiadomosci  nowe dymki z alignem user right / assistant left -->
+            <div class="col overflow-auto q-mt-sm q-mb-xs q-pr-sm" id="chat-box" style="padding: 4px 8px 2px;">
+              <div v-for="(msg, idx) in messages" :key="idx" class="q-mb-md" :class="msg.role === 'user' ? 'row justify-end' : 'row justify-start'">
+                <div
+                  :class="msg.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'"
+                  style="padding: 10px 14px 12px; max-width: 92%;"
+                >
+                  <div class="row items-center q-mb-xs justify-between" style="gap: 10px;">
+                    <div class="row items-center" style="gap:7px;">
+                      <div
+                        v-if="msg.role !== 'user'"
+                        style="width:18px;height:18px;border-radius:999px;display:flex;align-items:center;justify-content:center;background: linear-gradient(135deg, rgba(34,211,238,0.35), rgba(139,92,246,0.35)); box-shadow: 0 0 6px rgba(139,92,246,0.35);"
+                      >
+                        <q-icon :name="msg.role === 'assistant' ? 'smart_toy' : 'info'" size="11px" color="white"></q-icon>
+                      </div>
+                      <div
+                        v-else
+                        style="width:18px;height:18px;border-radius:999px;display:flex;align-items:center;justify-content:center;background: rgba(255,255,255,0.10);"
+                      >
+                        <q-icon name="person" size="11px" color="#e5e7eb"></q-icon>
+                      </div>
+                      <span class="chat-role-label" :style="msg.role === 'user' ? 'color:#c4b5fd;' : (msg.role === 'assistant' ? 'color:#6ee7b7;' : 'color:#fde68a;')">
+                        {{ msg.role === 'user' ? 'Ty' : (msg.role === 'assistant' ? formatModelName(activeTab?.model) : 'System') }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="mono" style="font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; color: inherit;">
+                    {{ msg.content }}
+                  </div>
+                </div>
+              </div>
+              <div v-if="messages.length === 0" class="text-center q-mt-xl" style="opacity:.55;">
+                <div style="width:68px;height:68px;border-radius:22px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, rgba(139,92,246,0.18), rgba(34,211,238,0.14));border:1px solid rgba(139,92,246,0.22);">
+                  <q-icon name="auto_awesome" size="28px" color="purple-3"></q-icon>
+                </div>
+                <div class="text-weight-600" style="font-size:13px; color:#e5e7eb; margin-bottom:4px;">Cześć 👋 W czym mogę pomóc?</div>
+                <div style="font-size:11.5px; color:#94a3b8; max-width: 80%; margin: 0 auto;">
+                  Wpisz zadanie poniżej. Agent uruchomi narzędzia w katalogu tego projektu.
+                </div>
+              </div>
+            </div>
+
+            <!-- Pole wprowadzania promptu  nowy styl send bar z gradient btn -->
+            <div class="column q-gutter-xs" style="padding: 2px 8px 8px 10px;">
               <q-input
                 v-model="draftPrompt"
                 type="textarea"
@@ -269,48 +585,84 @@
                 outlined
                 dense
                 dark
-                placeholder="Napisz zadanie (Ctrl+Enter, aby wysłać)..."
-                class="code-font"
+                :disable="isStreaming"
+                placeholder="Napisz zadanie (Ctrl+Enter aby wyslac)..."
+                class="mono"
+                style="font-size: 12.5px;"
                 @input="onDraftChange"
                 @keydown.ctrl.enter="sendMessage"
+                hide-bottom-space
               >
                 <template v-slot:after>
-                  <q-btn round dense flat icon="send" color="primary" @click="sendMessage">
-                    <q-tooltip>Wyślij prompt do agenta</q-tooltip>
-                  </q-btn>
+                  <div class="row items-center q-gutter-xs">
+                    <q-btn
+                      v-if="isStreaming"
+                      dense
+                      unelevated
+                      icon="stop_circle"
+                      label="Stop"
+                      color="red-9"
+                      text-color="red-1"
+                      @click="stopChat"
+                      style="border-radius:10px; font-size: 11px; padding: 4px 10px; height:32px;"
+                    >
+                      <q-tooltip>Anuluj generowanie (session/cancel)</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      dense
+                      unelevated
+                      no-caps
+                      :icon="isStreaming ? 'sync' : 'send'"
+                      :label="isStreaming ? 'Generuje' : 'Wyslij'"
+                      :loading="isStreaming"
+                      :disable="isStreaming"
+                      @click="sendMessage"
+                      class="btn-primary"
+                      style="padding: 5px 14px; height: 34px; font-size: 12px;"
+                    >
+                      <q-tooltip>{{ isStreaming ? 'Generowanie w toku' : 'Wyslij prompt do agenta (Ctrl+Enter)' }}</q-tooltip>
+                    </q-btn>
+                  </div>
                 </template>
               </q-input>
-              <div class="row justify-between text-caption text-grey-6" style="font-size: 11px;">
-                <span>💡 Draft promptu zapisuje się automatycznie</span>
-                <span>{{ draftPrompt.length }} znaków</span>
+              <div class="row justify-between items-center" style="padding: 4px 6px 0;">
+                <span v-if="!isStreaming" class="mono" style="font-size: 10.5px; color:#64748b;">
+                  💡 Draft zapisuje się automatycznie
+                </span>
+                <span v-else class="row items-center no-wrap text-amber-3 text-weight-600" style="font-size: 11px; gap:6px;">
+                  <q-icon name="sync" size="11px" spin></q-icon>
+                  Agent pracuje… {{ modelInference?.tokens || 0 }} tok · {{ modelInference?.chars || 0 }} zn. kontekstu
+                </span>
+                <span class="mono" style="font-size: 10.5px; color:#64748b;">
+                  {{ draftPrompt.length }} zn.
+                </span>
               </div>
             </div>
-
           </div>
 
         </q-page>
       </q-page-container>
 
-      <!-- MODAL DLA PAKIETÓW I LIMITÓW (APEXCHARTS) -->
+      <!-- MODAL DLA PAKIETW I LIMITW (APEXCHARTS) -->
       <q-dialog v-model="showQuotaModal">
         <q-card class="glass-card text-white q-pa-md" style="min-width: 650px; max-width: 800px;">
           <q-card-section class="row items-center justify-between q-pb-none">
             <div class="text-h6 row items-center">
               <q-icon name="pie_chart" color="primary" class="q-mr-sm"></q-icon>
-              Centrum Pakietów & Limitów AI
+              Centrum Pakietlw & Limitlw AI
             </div>
             <q-btn flat round dense icon="close" v-close-popup></q-btn>
           </q-card-section>
 
           <q-card-section class="q-pt-sm">
             <div class="text-caption text-grey-4 q-mb-md">
-              Przegląd aktualnego zużycia środków, limitów dziennych zapytań i dat ich odnowienia.
+              Przeglad aktualnego zuycia srodklw, limitlw dziennych zapytaz i dat ich odnowienia.
             </div>
 
             <!-- Wykres ApexCharts Donut / RadialBar -->
             <div id="quota-chart" class="q-mb-md"></div>
 
-            <!-- Kafelki ze szczegółami pakietów -->
+            <!-- Kafelki ze szczegllami pakietlw -->
             <div class="column q-gutter-sm">
               <q-card v-for="q in quotas" :key="q.provider_id" flat bordered class="bg-dark q-pa-sm" style="border-color: rgba(255,255,255,0.08);">
                 <div class="row items-center justify-between">
@@ -325,11 +677,11 @@
                   </div>
                   <div class="text-right">
                     <div class="text-weight-bold text-indigo-3" style="font-size: 1.1rem;">
-                      <span v-if="q.quota_total">{{ q.quota_remaining }} / {{ q.quota_total }} pozostało</span>
+                      <span v-if="q.quota_total">{{ q.quota_remaining }} / {{ q.quota_total }} pozostalo</span>
                       <span v-else>{{ q.plan_type }}</span>
                     </div>
                     <div class="text-caption text-amber-5">
-                      📅 Odnowienie: {{ q.resets_at || 'Brak limitu' }}
+                      z Odnowienie: {{ q.resets_at || 'Brak limitu' }}
                     </div>
                   </div>
                 </div>
@@ -364,7 +716,7 @@
           <q-card-section class="row items-center justify-between q-pb-none">
             <div class="text-h6 row items-center">
               <q-icon name="monetization_on" color="amber-4" class="q-mr-sm" size="28px"></q-icon>
-              Katalog Działających Modeli & Cennik
+              Katalog Dzialajacych Modeli & Cennik
             </div>
             <div class="row items-center q-gutter-sm">
               <q-badge color="positive" class="text-subtitle2 q-pa-sm">
@@ -375,7 +727,7 @@
           </q-card-section>
 
           <q-card-section class="text-caption text-grey-4 q-pt-none q-pb-sm">
-            Prezentowane są wyłącznie modele u dostawców, którzy są aktualnie zweryfikowani i dostępni (lokalny port, aktywny klucz API lub darmowy tier).
+            Prezentowane sa wylacznie modele u dostawclw, ktlrzy sa aktualnie zweryfikowani i dostpni (lokalny port, aktywny klucz API lub darmowy tier).
           </q-card-section>
 
           <q-card-section class="row q-col-gutter-md q-pt-xs">
@@ -395,8 +747,8 @@
                 dark
                 :options="[
                   { label: 'Wszystkie', value: 'all' },
-                  { label: '🟢 Tylko Darmowe ($0.00)', value: 'free' },
-                  { label: '💳 Direct API', value: 'paid' }
+                  { label: 'zz Tylko Darmowe ($0.00)', value: 'free' },
+                  { label: 'zl Direct API', value: 'paid' }
                 ]"
               ></q-btn-toggle>
             </div>
@@ -466,21 +818,73 @@
   <script src="https://cdn.jsdelivr.net/npm/quasar@2.14.2/dist/quasar.umd.prod.js"></script>
 
   <script>
-    const { createApp, ref, computed, onMounted, watch } = Vue;
+    const { createApp, ref, computed, onMounted, watch, watchEffect } = Vue;
+
+    // Fallback base URL: jeśli dashboard jest otwarty jako file:// (podwójne kliknięcie z eksploratora),
+    // to relative fetch '/api/status' zawiedzie — autodetekcja działającego Web Companion na portach 7711-7715.
+    const WEB_COMPANION_FALLBACKS = [
+      '',                                    // 0 = relative path (jeśli dashboard serwuje sam Web Companion — najlepsza opcja)
+      'http://127.0.0.1:7711',               // 1 = domyślny Web Companion
+      'http://127.0.0.1:7712',               // 2 = fallback 1 (7711 zajęty)
+      'http://127.0.0.1:7713',               // 3 = fallback 2
+      'http://127.0.0.1:7714',               // 4 = fallback 3
+      'http://127.0.0.1:7715',               // 5 = fallback 4 (ostatni)
+    ];
+    let cachedBaseIdx = 0;  // który base działał ostatnio (aby nie próbować wszystkich 6 za każdym razem)
 
     const app = createApp({
       setup() {
-        const status = ref({ port: 8765, project: 'OpenCode-RS' });
+        const status = ref({ port: 7711, project: 'OpenCode-RS' });
+        const connectionState = ref('connecting'); // 'connecting' | 'online' | 'offline'
+        const connectionStateLabel = computed(() => ({
+          connecting: 'Łączenie z Web Companion',
+          online: 'Połączono',
+          offline: 'Offline — Błąd połączenia z Web Companion',
+        }[connectionState.value] || '?'));
         const workspace = ref({ active_tab_id: '', tabs: [] });
         const activeTabId = ref('');
         const draftPrompt = ref('');
         const fileTree = ref([]);
         const currentFile = ref('');
         const fileContent = ref('');
+        const isFileModified = ref(false);
+        const isSaving = ref(false);
         const messages = ref([]);
         const quotas = ref([]);
         const modelCatalog = ref([]);
         const selectedModel = ref(null);
+        const modelRefreshTs = ref(0);
+        const isStreaming = ref(false);
+        const chatSessionId = ref(null);
+        const modelInference = ref({ chars: 0, tokens: 0 });
+
+        //  apiFetch helper: najpierw relative, potem fallback 7711-7715 
+        async function apiFetch(path, options) {
+          const lastWorking = cachedBaseIdx;
+          // 1) Najpierw próba ostatnio działającego base (zaczynamy od relative = 0 jeśli cachedBaseIdx=0)
+          for (let i = 0; i < WEB_COMPANION_FALLBACKS.length; i++) {
+            const idx = (lastWorking + i) % WEB_COMPANION_FALLBACKS.length;
+            const base = WEB_COMPANION_FALLBACKS[idx];
+            const url = `${base}${path}`;
+            try {
+              const res = await fetch(url, Object.assign({ credentials: 'omit' }, options || {}));
+              if (res.ok) {
+                cachedBaseIdx = idx;
+                if (connectionState.value !== 'online') connectionState.value = 'online';
+                return res;
+              }
+              // 4xx / 5xx — serwer działa ale zwraca błąd — nie przechodź do fallbacków (to nie jest "brak połączenia")
+              cachedBaseIdx = idx;
+              if (connectionState.value !== 'online') connectionState.value = 'online';
+              return res;
+            } catch (_err) {
+              // Network failure (Failed to fetch) — przejdź do kolejnego fallbacku
+            }
+          }
+          // Wszystkie 6 zawiodły — Web Companion offline
+          connectionState.value = 'offline';
+          throw new Error('Failed to fetch: Web Companion offline — uruchom `opencode --web --port 7711` lub tray.');
+        }
 
         const showQuotaModal = ref(false);
         const showPricingModal = ref(false);
@@ -533,14 +937,14 @@
 
         const fetchStatus = async () => {
           try {
-            const res = await fetch('/api/status');
+            const res = await apiFetch('/api/status');
             status.value = await res.json();
           } catch (e) {}
         };
 
         const fetchWorkspace = async () => {
           try {
-            const res = await fetch('/api/workspace');
+            const res = await apiFetch('/api/workspace');
             workspace.value = await res.json();
             if (workspace.value.active_tab_id) {
               activeTabId.value = workspace.value.active_tab_id;
@@ -555,14 +959,14 @@
 
         const fetchModels = async () => {
           try {
-            const res = await fetch('/api/models');
+            const res = await apiFetch('/api/models');
             modelCatalog.value = await res.json();
           } catch (e) {}
         };
 
         const fetchQuotas = async () => {
           try {
-            const res = await fetch('/api/quotas');
+            const res = await apiFetch('/api/quotas');
             quotas.value = await res.json();
             renderQuotaChart();
           } catch (e) {}
@@ -571,7 +975,7 @@
         const fetchFileTree = async () => {
           try {
             const path = activeTab.value ? activeTab.value.project_path : '';
-            const res = await fetch('/api/fs/tree?path=' + encodeURIComponent(path));
+            const res = await apiFetch('/api/fs/tree?path=' + encodeURIComponent(path));
             fileTree.value = await res.json();
           } catch (e) {}
         };
@@ -579,18 +983,37 @@
         const onFileSelect = async (filePath) => {
           if (!filePath) return;
           try {
-            const res = await fetch('/api/fs/file?path=' + encodeURIComponent(filePath));
+            const res = await apiFetch('/api/fs/file?path=' + encodeURIComponent(filePath));
             const data = await res.json();
             if (data.status === 'ok') {
               currentFile.value = data.path;
               fileContent.value = data.content;
+              isFileModified.value = false;
             }
           } catch (e) {}
         };
 
+        const saveCurrentFile = async () => {
+          if (!currentFile.value || !fileContent.value && fileContent.value !== '') return;
+          isSaving.value = true;
+          try {
+            const res = await apiFetch('/api/fs/file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: currentFile.value, content: fileContent.value })
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              isFileModified.value = false;
+            }
+          } catch (e) {} finally {
+            isSaving.value = false;
+          }
+        };
+
         const switchTab = async (tabId) => {
           activeTabId.value = tabId;
-          await fetch('/api/workspace/tab/switch', {
+          await apiFetch('/api/workspace/tab/switch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tab_id: tabId })
@@ -604,7 +1027,7 @@
         };
 
         const closeTab = async (tabId) => {
-          await fetch('/api/workspace/tab/close', {
+          await apiFetch('/api/workspace/tab/close', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tab_id: tabId })
@@ -614,7 +1037,7 @@
         };
 
         const createTab = async () => {
-          const res = await fetch('/api/workspace/tab/new', {
+          const res = await apiFetch('/api/workspace/tab/new', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -631,7 +1054,7 @@
           clearTimeout(draftTimeout);
           draftTimeout = setTimeout(() => {
             if (activeTabId.value) {
-              fetch('/api/workspace/tab/draft', {
+              apiFetch('/api/workspace/tab/draft', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -650,20 +1073,132 @@
           }
         };
 
-        const sendMessage = () => {
-          if (!draftPrompt.value.trim()) return;
+        const scrollChatToBottom = () => {
+          requestAnimationFrame(() => {
+            const box = document.getElementById('chat-box');
+            if (box) box.scrollTop = box.scrollHeight;
+          });
+        };
+
+        const stopChat = async () => {
+          const sid = chatSessionId.value;
+          if (!sid) return;
+          try {
+            await apiFetch('/api/cancel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sid })
+            });
+          } catch (_) {}
+        };
+
+        const sendMessage = async () => {
+          if (isStreaming.value || !draftPrompt.value.trim()) return;
           const text = draftPrompt.value;
           messages.value.push({ role: 'user', content: text });
           draftPrompt.value = '';
           onDraftChange();
 
-          // Symulacja odpowiedzi agenta (w kolejnym kroku podpięcie pod SSE streaming)
-          setTimeout(() => {
-            messages.value.push({
-              role: 'assistant',
-              content: 'Otrzymałem Twoje polecenie w projekcie: ' + (activeTab.value?.title || 'Domyślny') + '.\nPrzetwarzam zadanie za pomocą modelu ' + (activeTab.value?.model || 'domyślny') + '...'
+          const msgIdx = messages.value.length;
+          messages.value.push({ role: 'assistant', content: '' });
+
+          const sid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'sess_' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
+          chatSessionId.value = sid;
+          isStreaming.value = true;
+          modelInference.value = { chars: 0, tokens: 0 };
+          scrollChatToBottom();
+
+          const chosenModel = (selectedModel.value && selectedModel.value.id)
+            ? selectedModel.value.id
+            : (activeTab.value?.model || '');
+
+          try {
+            const resp = await apiFetch('/api/chat/prompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: sid,
+                model: chosenModel,
+                prompt: text
+              })
             });
-          }, 400);
+            if (!resp.ok) {
+              let msg = 'HTTP ' + resp.status;
+              try { const t = await resp.text(); if (t) msg += '  ' + t.slice(0, 240); } catch (_) {}
+              throw new Error(msg);
+            }
+            if (!resp.body) throw new Error('Brak strumienia odpowiedzi');
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buf = '';
+            let curEvent = 'message';
+
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value || new Uint8Array(), { stream: true });
+
+              let idx;
+              while ((idx = buf.indexOf('\n')) !== -1) {
+                const rawLine = buf.slice(0, idx);
+                buf = buf.slice(idx + 1);
+                const line = rawLine.replace(/\r$/, '');
+
+                if (!line.trim()) {
+                  curEvent = 'message';
+                  continue;
+                }
+                if (line.startsWith('event:')) {
+                  curEvent = line.slice(6).trim() || 'message';
+                  continue;
+                }
+                if (line.startsWith('data:')) {
+                  const dataStr = line.slice(5).trim();
+                  if (!dataStr) { curEvent = 'message'; continue; }
+                  try {
+                    const data = JSON.parse(dataStr);
+                    if (curEvent === 'token') {
+                      messages.value[msgIdx].content += data.token || '';
+                      scrollChatToBottom();
+                    } else if (curEvent === 'context') {
+                      modelInference.value = {
+                        chars: data.chars || 0,
+                        tokens: data.tokens || 0
+                      };
+                    } else if (curEvent === 'done') {
+                      if (data.status === 'error') {
+                        const err = '❌ Błąd: ' + (data.message || 'nieznany błąd');
+                        if (!messages.value[msgIdx].content) messages.value[msgIdx].content = err;
+                        else messages.value[msgIdx].content += '\n\n' + err;
+                      } else {
+                        if (data.final_text !== undefined && data.final_text !== null) {
+                          messages.value[msgIdx].content = String(data.final_text);
+                        }
+                      }
+                      scrollChatToBottom();
+                    } else {
+                      // message / unknown  ignore
+                    }
+                  } catch (parseErr) {
+                    // ignore invalid JSON data frame
+                  }
+                  curEvent = 'message';
+                  continue;
+                }
+              }
+            }
+          } catch (err) {
+            const errText = '❌ Błąd połączenia z Web Companion: ' + (err && err.message ? err.message : String(err));
+            if (!messages.value[msgIdx].content) messages.value[msgIdx].content = errText;
+            else messages.value[msgIdx].content += '\n\n' + errText;
+            scrollChatToBottom();
+          } finally {
+            isStreaming.value = false;
+            chatSessionId.value = null;
+          }
         };
 
         const renderQuotaChart = () => {
@@ -734,12 +1269,35 @@
         };
 
         const refreshAll = async () => {
-          await fetchStatus();
-          await fetchModels();
+          // fetchModels jest osobno bez awaita — startuje równolegle (może być wolny jeśli nie ma cache),
+          // ale status/workspace/quotas ładują się OD RAZU.
+          fetchStatus();
+          fetchModels();
           await fetchWorkspace();
-          await fetchQuotas();
-          await fetchFileTree();
+          fetchQuotas();
+          fetchFileTree();
         };
+
+        const refreshModels = async () => {
+          try {
+            const res = await apiFetch('/api/models?refresh=1');
+            modelCatalog.value = await res.json();
+            modelRefreshTs.value = Date.now();
+          } catch (e) {}
+        };
+
+        // Auto-dopasuj selectedModel jeżeli: (a) karta się zmieniła, lub (b) załadował się nowy modelCatalog,
+        // lub (c) workspace.tabs się zaktualizował. Rozwiązuje to race condition:
+        // fetchWorkspace vs fetchModels — jeden z nich prawie zawsze kończy się pierwszy z pusty drugi.
+        watchEffect(() => {
+          const tab = activeTab.value;
+          const catalog = modelCatalog.value || [];
+          if (!tab || !tab.model || catalog.length === 0) return;
+          // Tylko jeśli selectedModel nie pasuje już do tab.model (np. fetchWorkspace dostał nowy state później)
+          if (selectedModel.value && selectedModel.value.id === tab.model) return;
+          const m = catalog.find(item => item.id === tab.model) || { id: tab.model, name: tab.model };
+          selectedModel.value = m;
+        });
 
         watch(showQuotaModal, (val) => {
           if (val) {
@@ -753,6 +1311,8 @@
 
         return {
           status,
+          connectionState,
+          connectionStateLabel,
           workspace,
           activeTabId,
           activeTab,
@@ -760,10 +1320,17 @@
           fileTree,
           currentFile,
           fileContent,
+          isFileModified,
+          isSaving,
+          saveCurrentFile,
           messages,
           quotas,
           modelCatalog,
           selectedModel,
+          modelRefreshTs,
+          isStreaming,
+          chatSessionId,
+          modelInference,
           showQuotaModal,
           showPricingModal,
           pricingSearch,
@@ -783,6 +1350,8 @@
           onFileSelect,
           fetchFileTree,
           sendMessage,
+          stopChat,
+          refreshModels,
           getQuotaColor,
           formatModelName,
           openDataDir,

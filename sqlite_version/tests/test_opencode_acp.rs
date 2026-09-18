@@ -75,7 +75,6 @@ async fn test_opencode_acp_default_model() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_opencode_acp_free_model() {
     eprintln!("🚀 Test: opencode acp → darmowy Ling 3.0 Flash");
 

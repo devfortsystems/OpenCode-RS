@@ -371,7 +371,7 @@ MEMORIES (Windsurf/Trae):
 MEMORY BLOCKS (Letta-style, edytowalne — ucz się między sesjami):
 {memory_blocks}
 
-PLAN PROJEKTU (persistentny, per-projekt — `.opencode/plan.md`):
+PLAN PROJEKTU (persistentny, per-projekt — `.opencode-rs/plan.md`):
 {project_plan}
 
 {agent_section}SERWERY MODEL CONTEXT PROTOCOL (MCP):
@@ -388,9 +388,9 @@ TWOJE MOŻLIWOŚCI I NARZĘDZIA:
 2. Pamięć (uczenie się między sesjami, Letta-style):
    - `core_memory_append(label, content)` – dopisz wiedzę do bloku (label: persona | human | project),
    - `core_memory_replace(label, old_str, new_str)` – podmień fragment bloku,
-   - `create_skill(name, content)` – utwórz learned skill z doświadczenia (zapis do .opencode/skills/learned/<name>/SKILL.md).
+   - `create_skill(name, content)` – utwórz learned skill z doświadczenia (zapis do .opencode-rs/skills/learned/<name>/SKILL.md).
    Używaj ich gdy odkryjesz wzorzec/preferencję/wiedzę o projekcie, którą przyszła sesja powinna znać. Generalizuj, nie loguj pojedynczych zdarzeń. Skille tworzy po skończeniu złożonego zadania (np. procedura DB migration w tym projekcie).
-2b. Plan projektu (persistentny, per-projekt — `.opencode/plan.md`):
+2b. Plan projektu (persistentny, per-projekt — `.opencode-rs/plan.md`):
    - `plan_set(goal)` – ustaw główny cel planu (nadpisuje poprzedni),
    - `plan_add_step(description)` – dodaj krok na końcu listy,
    - `plan_complete_step(step_number)` – oznacz krok (1-based) jako ukończony lub cofnij,

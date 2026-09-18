@@ -1,0 +1,11 @@
+.git
+target
+sqlite_version/target
+asar_unpacked
+*.log
+.env
+.env.*
+!.env.example
+.opencode
+.opencode-rs
+node_modules
